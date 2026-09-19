@@ -6,7 +6,6 @@ services:
     plan: free
     numInstances: 1
     healthCheckPath: /_stcore/health
-    maxShutdownDelaySeconds: 60
     autoDeployTrigger: checksPass
     envVars:
       - key: APP_ENV
