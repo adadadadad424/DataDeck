@@ -23,7 +23,8 @@
 ## Vor Einladung echter Tester zwingend
 
 - [x] Hosting-Ziel Render und Region Frankfurt festgelegt
-- [ ] Privates GitHub-Repository erstellen und Render verbinden
+- [x] Privates GitHub-Repository erstellen und den geprüften Stand auf `main` pushen
+- [ ] Render-Verbindung und Free-Blueprint vollständig aktivieren
 - [ ] Domain, HTTPS und Reverse-Proxy-Sicherheitsheader konfigurieren
 - [ ] OIDC-Provider, Redirect-URL, Session-Ablauf und Logout end-to-end testen
 - [ ] Nur echte Beta-E-Mails in `BETA_APPROVED_USERS` freigeben

@@ -3,7 +3,7 @@
 ## Zielarchitektur
 
 - Render Web Service in Frankfurt
-- Docker Runtime, Plan `1c-2g`, genau eine Instanz
+- Docker Runtime, Plan `free`, genau eine Instanz
 - verwaltetes HTTPS und WebSocket-Unterstützung
 - Google OIDC, serverseitige E-Mail-Allowlist
 - keine Datenbank und kein persistenter Datenträger
@@ -108,7 +108,9 @@ Test-Releases praktisch durchgeführt wurde.
 
 ## Betriebskosten
 
-Der Render-Plan `1c-2g` kostet derzeit 25 USD pro Monat. Hinzu kommen Domain,
-Uptime-Monitor und variable Gemini-Nutzung. Quota- und Budgetalarme sind vor realen
-Tester-Einladungen Pflicht.
-
+Die erste Online-Validierung nutzt Renders kostenlosen Plan. Es wird kein
+kostenpflichtiger Compute-Plan aktiviert. Der Free-Plan kann nach Inaktivität
+herunterfahren und ist mit 512 MB RAM nicht für belastbare Mehrnutzer-Lasttests
+gedacht. Vor einem Upgrade Preisangaben erneut prüfen, ein Budget festlegen und die
+Freigabe des Produkteigentümers einholen. Gemini kann weiterhin verbrauchsabhängige
+Kosten verursachen; dafür Quoten und Budgetalarme setzen.

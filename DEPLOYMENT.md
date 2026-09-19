@@ -4,8 +4,10 @@
 
 Für die geschlossene Beta ist Render vorgesehen: Docker- und WebSocket-Support,
 verwaltetes HTTPS, Frankfurt-Region, HTTP-Healthchecks und schnelle Rollbacks bei
-geringer operativer Komplexität. Startkonfiguration: eine `1c-2g`-Instanz mit 1 CPU,
-2 GB RAM und ohne persistenten Datenträger.
+geringer operativer Komplexität. Die erste technische Online-Validierung läuft auf
+einer kostenlosen Einzelinstanz mit 0,1 CPU, 512 MB RAM und ohne persistenten
+Datenträger. Vor einer Beta mit mehreren gleichzeitigen Nutzern wird anhand der
+Lasttests entschieden, ob ein kostenpflichtiger Plan erforderlich ist.
 
 Cloud Run wurde für diese erste Stufe nicht gewählt. Streamlit hält Sessiondaten im
 Prozess; Cloud Runs Session Affinity ist nur best effort und WebSockets unterliegen
@@ -27,6 +29,11 @@ gestartet. Der Wert eines Secrets wird dabei nie ausgegeben.
 `render.yaml` definiert Region, Plan, Einzelinstanz, Limits und Healthcheck. Werte mit
 `sync: false` werden ausschließlich im Render-Dashboard eingetragen. Das Blueprint
 enthält keine Credentials.
+
+Der Free-Plan ist nur für technische Validierung und eine sehr kleine geschlossene
+Beta vorgesehen. Er kann bei Inaktivität herunterfahren, hat begrenzte monatliche
+Laufzeit und bietet nur 512 MB RAM. Kaltstarts und fehlende Kapazität für parallele
+große Uploads sind daher erwartbare Plattformgrenzen und keine App-Fehler.
 
 Für Production gelten zunächst:
 
