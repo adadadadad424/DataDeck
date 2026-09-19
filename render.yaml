@@ -3,7 +3,7 @@ services:
     name: datadeck-beta
     runtime: docker
     region: frankfurt
-    plan: 1c-2g
+    plan: free
     numInstances: 1
     healthCheckPath: /_stcore/health
     maxShutdownDelaySeconds: 60
