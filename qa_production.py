@@ -62,6 +62,14 @@ class ProductionTests(unittest.TestCase):
         source = Path("main.py").read_text(encoding="utf-8")
         self.assertIn('if is_production:\n            is_premium = True', source)
 
+    def test_closed_beta_has_honest_public_placeholder_pages(self):
+        source = Path("main.py").read_text(encoding="utf-8")
+        for page in ("impressum", "datenschutz", "nutzungsbedingungen", "feedback"):
+            self.assertIn(f'"{page}"', source)
+        self.assertIn("keine Rechtsberatung", source)
+        self.assertIn('"werden nur berechnete und aggregierte Kennzahlen übertragen, niemals "', source)
+        self.assertIn('"die vollständigen Rohdaten des Uploads."', source)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

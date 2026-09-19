@@ -147,6 +147,70 @@ def _show_unexpected_error(step: str) -> None:
     _log_event("UNEXPECTED_ERROR", logging.ERROR, step=step)
 
 
+def _render_public_beta_page() -> bool:
+    """Render public beta notices without requiring an authenticated session."""
+    query_params = getattr(st, "query_params", {})
+    page = str(query_params.get("page", "")).strip().casefold()
+    if page not in {"impressum", "datenschutz", "nutzungsbedingungen", "feedback"}:
+        return False
+
+    st.markdown('<div class="dd-eyebrow">DATADECK BETA</div>', unsafe_allow_html=True)
+    if page == "impressum":
+        st.title("Impressum")
+        st.info(
+            "DataDeck befindet sich in einer geschlossenen technischen Beta. "
+            "Die vollständigen Betreiberangaben werden vor einer öffentlichen "
+            "Veröffentlichung ergänzt. Dies ist noch kein öffentliches Angebot."
+        )
+    elif page == "datenschutz":
+        st.title("Datenschutzhinweise zur geschlossenen Beta")
+        st.write(
+            "Hochgeladene CSV- und XLSX-Dateien werden ausschließlich für die "
+            "angeforderte Analyse in der aktuellen Sitzung verarbeitet. An Gemini "
+            "werden nur berechnete und aggregierte Kennzahlen übertragen, niemals "
+            "die vollständigen Rohdaten des Uploads."
+        )
+        st.write(
+            "Für die Zugangskontrolle verarbeitet DataDeck die E-Mail-Adresse des "
+            "angemeldeten Google-Kontos. Die Anwendung wird für diese Beta auf "
+            "Render betrieben; KI-Interpretationen werden über Google Gemini erzeugt."
+        )
+        st.warning(
+            "Vor einer öffentlichen Veröffentlichung wird dieser technische Hinweis "
+            "durch die finale Datenschutzerklärung des Betreibers ersetzt."
+        )
+    elif page == "nutzungsbedingungen":
+        st.title("Nutzungsbedingungen der geschlossenen Beta")
+        st.write(
+            "Der Zugang ist ausschließlich für eingeladene Testpersonen bestimmt. "
+            "DataDeck ist eine Vorabversion; Analyseergebnisse und PDF-Berichte müssen "
+            "vor einer geschäftlichen Weiterverwendung fachlich geprüft werden."
+        )
+        st.warning(
+            "Verbindliche Nutzungsbedingungen werden vor einer öffentlichen "
+            "Veröffentlichung durch den Betreiber bereitgestellt."
+        )
+    else:
+        st.title("Beta-Feedback")
+        st.write("Für das Testgespräch helfen insbesondere diese Punkte:")
+        st.markdown(
+            "- War Upload und Spaltenzuordnung verständlich?\n"
+            "- Stimmen die berechneten Kennzahlen mit Ihrer Erwartung überein?\n"
+            "- Waren KI-Einordnung und PDF-Bericht hilfreich?\n"
+            "- Was war unklar, und welche Analyse hat gefehlt?"
+        )
+        st.info(
+            "Es werden auf dieser Seite keine Datensätze oder Nachrichten automatisch "
+            "übertragen. Feedback wird im vereinbarten Beta-Testgespräch aufgenommen."
+        )
+
+    if st.button("Zurück zu DataDeck", type="primary", key=f"public_back_{page}"):
+        query_params.clear()
+        st.rerun()
+    st.caption("Vorläufiger Hinweis für die geschlossene Beta, keine Rechtsberatung.")
+    return True
+
+
 def _auth_gate() -> dict | None:
     errors = production_config_errors()
     if errors:
@@ -415,6 +479,8 @@ def _render_column_mapping_controls(df_raw: pd.DataFrame, warnings: dict | None 
 
 def main() -> None:
     _init_session_state()
+    if _render_public_beta_page():
+        return
     if _auth_gate() is None:
         return
     is_production = app_environment() == "production"
