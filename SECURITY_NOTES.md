@@ -1,6 +1,6 @@
 # DataDeck Security Notes
 
-Stand: 18.09.2026, Version 0.8.0-beta.
+Stand: 19.09.2026, Version 0.8.0-beta.
 
 ## Datenfluss
 
@@ -73,6 +73,21 @@ Gemini-Anfragen enthalten aggregierte Beträge, Margen, Zeitvergleiche, Datenqua
 und maskierte/gekürzte Kategorienamen. Welche Aufbewahrung für die konfigurierte Google-
 Organisation gilt, muss vor Beta-Start anhand Vertrag, Region und Google-Einstellungen
 geprüft und in der Datenschutzerklärung genannt werden.
+
+## Technische Verarbeitungsübersicht
+
+| Datenart | Zweck | Speicherort | Technische Dauer | Empfänger |
+|---|---|---|---|---|
+| Google-Konto-E-Mail und OIDC-Claims | Login und Allowlist | Streamlit-Identitätssitzung | bis Logout oder Ablauf des Identity-Cookies | Render, Google OIDC |
+| CSV/XLSX-Upload | Analyse | RAM der einzelnen Streamlit-Session | bis Logout, Sessionende, Prozessneustart oder Ablauf der Sitzung | Render |
+| Bereinigte Daten und Filterzustand | Dashboard und PDF | RAM der einzelnen Streamlit-Session | wie Upload | Render |
+| PDF-Bytes | Download | RAM der einzelnen Streamlit-Session | bis Logout, Kontextwechsel oder Sessionende | Render |
+| Aggregierte Kennzahlen und maskierte Kategorien | KI-Interpretation | ausgehende Gemini-Anfrage | nach Google-Vertrag und Projekteinstellungen zu klären | Google Gemini |
+| Ereignistyp, Korrelations-ID, anonymisierte Nutzer-ID, Mengen und Laufzeiten | Betrieb und Fehleranalyse | Render-Logs | nach Render-Konfiguration zu klären | Render |
+
+DataDeck besitzt keine Datenbank, keinen persistenten Upload-Speicher und kein
+automatisches Feedback-Attachment. Diese technische Übersicht ist eine Grundlage für
+die noch rechtlich zu prüfenden Texte und ersetzt keine Datenschutzerklärung oder AVV.
 
 ## Logging und Fehler
 

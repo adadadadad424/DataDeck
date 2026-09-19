@@ -24,22 +24,22 @@
 
 - [x] Hosting-Ziel Render und Region Frankfurt festgelegt
 - [x] Privates GitHub-Repository erstellen und den geprüften Stand auf `main` pushen
-- [ ] Render-Verbindung und Free-Blueprint vollständig aktivieren
-- [ ] Domain, HTTPS und Reverse-Proxy-Sicherheitsheader konfigurieren
-- [ ] OIDC-Provider, Redirect-URL, Session-Ablauf und Logout end-to-end testen
+- [x] Render-Verbindung und Free-Blueprint vollständig aktivieren
+- [ ] Verwaltetes HTTPS aktiv; zusätzliche Reverse-Proxy-Sicherheitsheader prüfen
+- [ ] OIDC-Provider und erlaubten Redirect live geprüft; Deny, Logout und Session-Ablauf offen
 - [ ] Nur echte Beta-E-Mails in `BETA_APPROVED_USERS` freigeben
-- [ ] Gemini-Schlüssel rotieren, beschränken und Budget-/Quota-Alarm setzen
+- [ ] Gemini-Schlüssel rotieren, beschränken und Budget-/Quota-Alarm setzen (Google-Konto blockiert derzeit die Schlüsselerstellung)
 - [ ] Datenschutzerklärung, Impressum und Nutzungsbedingungen rechtlich freigeben
 - [ ] Google-Datenverarbeitung, DPA, Retention und Region dokumentieren
-- [ ] Support- und Feedbackkanal benennen
-- [ ] Monitoring und Alarmempfänger testen
+- [ ] Dauerhaften Support- und Feedbackkanal benennen
+- [ ] Monitoring-Logs geprüft; kontrollierten Fehler und Alarmempfänger testen
 - [ ] Externen Uptime-Monitor auf `/_stcore/health` einrichten
 - [ ] Cookie-Name und Secure/HttpOnly/SameSite an finaler Domain prüfen
 - [ ] 1/2/5/10-Nutzer-Lasttest und 2 parallele 100k-Uploads auf Render
 - [ ] ALPHA/BETA-Isolation mit zwei echten Browserprofilen auf Render
 - [ ] Secret-Rotation und Version-A/B/A-Rollback praktisch durchführen
 - [ ] Restore-/Rollback-Probe durchführen
-- [ ] Geheimnis-Scan im finalen Repository und Container-Image wiederholen
+- [x] Geheimnis-Scan in Arbeitsbaum, Git-Historie und lokalen Release-ZIPs wiederholt
 
 ## Vor öffentlichem oder bezahltem Launch
 

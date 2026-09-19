@@ -10,12 +10,9 @@ erfinden. Das erzwingt auch das Antwort-Schema unten: AIAnalysisResponse
 hat KEIN Feld für "Top-Kategorie" o.ä. - Top/Flop kommen im UI/PDF
 ausschließlich aus core/analysis.calculate_kpis(), nie aus der KI-Antwort.
 
-MODELLWAHL (Stand: August 2026): gemini-2.5-flash wird von Google am
-16.10.2026 abgeschaltet - für eine Produktionsbasis ungeeignet. Default
-ist gemini-3.6-flash (aktuelles GA-Modell, laut Google token-effizienter/
-günstiger als 3.5 Flash). Über GEMINI_MODEL_NAME konfigurierbar (z.B. auf
-das günstigere gemini-3.5-flash-lite aus der v3.2-Version umstellbar, ohne
-Code zu ändern) - deckt die Anforderung "konfigurierbares Modell" ab.
+MODELLWAHL (Stand: September 2026): Default ist das stabile
+gemini-3.8-flash. Über GEMINI_MODEL_NAME bleibt die Wahl konfigurierbar,
+ohne Code ändern zu müssen.
 
 TEMPERATURE/TOP_P/TOP_K: für Gemini-3.x-Modelle nicht mehr unterstützt/
 empfohlen - bewusst nicht gesetzt. Konsistenz wird stattdessen über klare
@@ -26,10 +23,10 @@ bleibt der genutzte Weg (bewusst keine Migration auf die Interactions API -
 generateContent bleibt offiziell unterstützt, kein zwingender Grund für
 den größeren Diff).
 
-FEHLERBEHANDLUNG: HTTP 429/500/503 sowie Netzwerk-/Timeout-Fehler und eine
-leere/nicht schema-konforme Antwort werden mit exponentiellem Backoff
-erneut versucht (max. 3 Versuche). Konfigurationsfehler (401/403/404,
-fehlender API-Key) und alle sonstigen Fehler werden sofort durchgereicht -
+FEHLERBEHANDLUNG: Anbieter- und Netzwerkfehler werden nach einem kurzen
+Versuch an den sicheren lokalen KPI-Fallback der UI weitergegeben.
+Konfigurationsfehler (401/403/404, fehlender API-Key) und alle sonstigen
+Fehler werden sofort durchgereicht -
 ein Retry würde sie nicht beheben.
 """
 

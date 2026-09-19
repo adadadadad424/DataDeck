@@ -2,7 +2,7 @@
 
 ## Umfang
 
-Start mit 5 bis 10 Beratern, jeweils nur mit freigegebenem Konto. Die Beta dauert zwei
+Start mit 3 bis 5 Beratern, jeweils nur mit freigegebenem Konto. Die Beta dauert zwei
 Wochen und verarbeitet zunächst bevorzugt synthetische oder vorher anonymisierte Dateien.
 
 ## Testablauf pro Teilnehmer
@@ -18,10 +18,9 @@ Wochen und verarbeitet zunächst bevorzugt synthetische oder vorher anonymisiert
 9. Fehlerfälle testen: falscher Dateityp, zu große Datei, unpassende Spalten.
 10. Verständlichkeit, Zeitersparnis und fehlende Kernfunktion bewerten.
 
-Danach ohne Produktänderung erfassen: War die Dateiwahl klar, war das Mapping
-nachvollziehbar, wird den KPIs vertraut, sind KI und PDF nutzbar, wo entstand
-Verwirrung, wie viel Zeit wird gespart, wie häufig wäre die Nutzung und besteht
-grundsätzliche Zahlungsbereitschaft?
+Danach ohne Produktänderung die zehn Fragen aus `BETA_FEEDBACK_QUESTIONS.md`
+beantworten lassen. Erst Muster aus mehreren Tests auswerten; einzelne Wünsche lösen
+keinen Feature-Sprint aus.
 
 ## Hosting-Matrix
 
@@ -49,6 +48,9 @@ Session-Abbruch oder dauerhaft mehr als 85 Prozent RAM wird abgebrochen und anal
 Pro Testfall: Dateityp, ungefähre Zeilen-/Spaltenzahl, erwartetes Ergebnis, tatsächliches
 Ergebnis, Screenshot ohne Kundendaten, Korrelations-ID und Schweregrad. Keine Originaldateien
 über unsichere Supportkanäle versenden.
+
+Testerstatus wird ausschließlich in `BETA_TESTERS.md` gepflegt. Dort keine Datensätze,
+Dateinamen, Inhalte oder sonstigen Kundendaten eintragen.
 
 Schweregrade: `BLOCKER` für Isolation/Auth/Secrets/falsche Finanzwerte, `HIGH` für nicht
 abschließbare Kernabläufe, `MEDIUM` für verständliche Workarounds und `LOW` für Polish.
