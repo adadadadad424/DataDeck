@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: datadeck-beta
+    runtime: docker
+    region: frankfurt
+    plan: 1c-2g
+    numInstances: 1
+    healthCheckPath: /_stcore/health
+    maxShutdownDelaySeconds: 60
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: AUTH_REQUIRED
+        value: "true"
+      - key: GEMINI_MODEL_NAME
+        value: gemini-3.8-flash
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "25"
+      - key: MAX_DATASET_COLUMNS
+        value: "250"
+      - key: MAX_XLSX_SHEETS
+        value: "25"
+      - key: MAX_XLSX_UNCOMPRESSED_MB
+        value: "100"
+      - key: OIDC_SERVER_METADATA_URL
+        value: https://accounts.google.com/.well-known/openid-configuration
+      - key: OIDC_COOKIE_SECRET
+        generateValue: true
+      - key: BETA_APPROVED_USERS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OIDC_CLIENT_ID
+        sync: false
+      - key: OIDC_CLIENT_SECRET
+        sync: false
+      - key: OIDC_REDIRECT_URI
+        sync: false
+      - key: LEGAL_IMPRINT_URL
+        sync: false
+      - key: LEGAL_PRIVACY_URL
+        sync: false
+      - key: LEGAL_TERMS_URL
+        sync: false
+      - key: BETA_FEEDBACK_URL
+        sync: false
