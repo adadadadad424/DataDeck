@@ -23,8 +23,9 @@ bleibt der genutzte Weg (bewusst keine Migration auf die Interactions API -
 generateContent bleibt offiziell unterstützt, kein zwingender Grund für
 den größeren Diff).
 
-FEHLERBEHANDLUNG: Anbieter- und Netzwerkfehler werden nach einem kurzen
-Versuch an den sicheren lokalen KPI-Fallback der UI weitergegeben.
+FEHLERBEHANDLUNG: Anbieter- und Netzwerkfehler werden mit kurzen,
+begrenzten Backoff-Versuchen abgefangen und erst danach an den sicheren
+lokalen KPI-Fallback der UI weitergegeben.
 Konfigurationsfehler (401/403/404, fehlender API-Key) und alle sonstigen
 Fehler werden sofort durchgereicht -
 ein Retry würde sie nicht beheben.
@@ -383,10 +384,11 @@ def generate_ai_summary(
     )
     prompt = _build_prompt(kpis, ziel_marge, is_premium, niche)
 
-    # Ein kurzer Anbieter-Versuch. Die UI fällt danach auf die lokale,
-    # deterministische KPI-Analyse zurück; lange Retry-Ketten würden den
-    # Nutzer bei 503/429 unnötig in einem Spinner festhalten.
-    max_retries = 1
+    # Drei begrenzte Anbieter-Versuche fangen kurze 429/5xx-Spitzen ab.
+    # Danach fällt die UI weiterhin sicher auf die deterministische lokale
+    # KPI-Analyse zurück; dauerhafte Konfigurationsfehler werden nie erneut
+    # versucht.
+    max_retries = 3
     last_error: Exception = AIInsightError(
         "KI-Generierung schlug nach mehreren Versuchen endgültig fehl."
     )

@@ -705,19 +705,40 @@ except ai.AIConfigError as e:
 except Exception as e:
     check("U2", "HTTP 403 wirft AIConfigError", False, "[MOCK]", f"{type(e).__name__}: {e}")
 
-# U: 500 -> schneller Fehler; die UI übernimmt danach mit lokalem Fallback
+# U: 500 -> kurzer Retry; ein nachfolgender Erfolg wird verwendet
 _FakeModels._NEXT_BEHAVIOR = {
     "mode": "raise_sequence",
     "value": [FakeAPIError(500, "Internal Error"), None, None],
     "success_text": '{"zusammenfassung":"ok nach retry","ziel_analyse":"y","action_plan":["z"]}',
 }
 try:
-    ai.generate_ai_summary(kpis_ai_test, 20.0, False)
-    check("U3", "HTTP 500 liefert schnell einen sicheren Fehler fuer den UI-Fallback", False, "[MOCK]")
-except ai.AIInsightError:
-    check("U3", "HTTP 500 liefert schnell einen sicheren Fehler fuer den UI-Fallback", True, "[MOCK]")
+    retry_result = ai.generate_ai_summary(kpis_ai_test, 20.0, False)
+    check(
+        "U3",
+        "HTTP 500 wird kurz wiederholt und kann sich erholen",
+        retry_result["zusammenfassung"] == "ok nach retry",
+        "[MOCK]",
+    )
 except Exception as e:
-    check("U3", "HTTP 500 liefert schnell einen sicheren Fehler fuer den UI-Fallback", False, "[MOCK]", f"{type(e).__name__}: {e}")
+    check("U3", "HTTP 500 wird kurz wiederholt und kann sich erholen", False, "[MOCK]", f"{type(e).__name__}: {e}")
+
+# U: wiederholter 503 -> nach drei Versuchen sicherer UI-Fallback
+_FakeModels._NEXT_BEHAVIOR = {
+    "mode": "raise_sequence",
+    "value": [
+        FakeAPIError(503, "Unavailable 1"),
+        FakeAPIError(503, "Unavailable 2"),
+        FakeAPIError(503, "Unavailable 3"),
+    ],
+}
+try:
+    ai.generate_ai_summary(kpis_ai_test, 20.0, False)
+    check("U3a", "HTTP 503 faellt nach begrenzten Retries sicher zurueck", False, "[MOCK]")
+except ai.AIInsightError as e:
+    safe_503 = "503" in str(e) and "Unavailable" not in str(e)
+    check("U3a", "HTTP 503 faellt nach begrenzten Retries sicher zurueck", safe_503, "[MOCK]")
+except Exception as e:
+    check("U3a", "HTTP 503 faellt nach begrenzten Retries sicher zurueck", False, "[MOCK]", f"{type(e).__name__}: {e}")
 
 # U: sonstiger API-Code -> sichere Meldung ohne rohen Anbietertext
 _FakeModels._NEXT_BEHAVIOR = {"mode": "raise", "value": FakeAPIError(418, "raw vendor detail with REDACTED_TEST_KEY")}
