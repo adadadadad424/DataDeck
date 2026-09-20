@@ -79,9 +79,9 @@ THEMES: dict[str, dict[str, str]] = {
 
 DEFAULT_THEME: ThemeName = "light"
 
-RADIUS_SM = "8px"
-RADIUS_MD = "12px"
-RADIUS_LG = "18px"
+RADIUS_SM = "6px"
+RADIUS_MD = "8px"
+RADIUS_LG = "12px"
 
 
 def get_theme(name: str) -> dict[str, str]:
@@ -99,6 +99,14 @@ def plotly_layout_colors(theme: dict[str, str]) -> dict:
         "paper_bgcolor": theme["surface"],
         "font_color": theme["text_muted"],
         "font_family": "Inter, -apple-system, sans-serif",
+        "title_font_color": theme["text"],
+        "title_font_size": 16,
+        "legend_font_color": theme["text_muted"],
+        "hoverlabel": {
+            "bgcolor": theme["surface"],
+            "bordercolor": theme["border"],
+            "font_color": theme["text"],
+        },
         "xaxis": {"gridcolor": theme["border"], "color": theme["text_muted"], "showline": False},
         "yaxis": {"gridcolor": theme["border"], "color": theme["text_muted"], "showline": False},
         "bargap": 0.35,
@@ -129,12 +137,12 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     h1, h2, h3, h4, h5, h6 {{
         color: {theme['text']};
         font-weight: 700;
-        letter-spacing: -0.01em;
+        letter-spacing: 0;
     }}
     p, label, span, div {{ color: {theme['text']}; }}
 
     #MainMenu, footer, header {{ visibility: hidden; }}
-    .block-container {{ padding-top: 2rem; max-width: 1180px; }}
+    .block-container {{ padding-top: 1.4rem; padding-bottom: 2rem; max-width: 1180px; }}
 
     /* ---- Sidebar / App-Shell ---- */
     [data-testid="stSidebar"] {{
@@ -159,6 +167,25 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     .stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {{
         background-color: {theme['accent_hover']} !important;
     }}
+    .stButton > button:disabled, .stDownloadButton > button:disabled,
+    .stFormSubmitButton > button:disabled {{
+        background-color: {theme['surface_alt']} !important;
+        color: {theme['text_muted']} !important;
+        border: 1px solid {theme['border']} !important;
+        opacity: 0.72;
+        cursor: not-allowed;
+    }}
+    .stButton > button:focus-visible, .stDownloadButton > button:focus-visible,
+    .stFormSubmitButton > button:focus-visible {{
+        outline: 3px solid {theme['accent_soft']} !important;
+        outline-offset: 2px;
+    }}
+    .stButton > button[kind="secondary"] {{
+        background-color: transparent !important;
+        color: {theme['text']} !important;
+        border: 1px solid {theme['border']} !important;
+    }}
+    .stButton > button[kind="secondary"] * {{ color: {theme['text']} !important; }}
     .stButton > button *, .stDownloadButton > button *, .stFormSubmitButton > button * {{
         color: {theme['accent_text']} !important;
     }}
@@ -297,7 +324,7 @@ def inject_theme_css(theme: dict[str, str]) -> str:
         background: {theme['surface']};
         border: 1px solid {theme['border']};
         border-radius: {RADIUS_MD};
-        padding: 20px 22px;
+        padding: 16px 18px;
         box-shadow: {theme['shadow']};
         margin-bottom: 14px;
     }}
@@ -308,6 +335,14 @@ def inject_theme_css(theme: dict[str, str]) -> str:
         padding: 16px 18px;
         margin-bottom: 12px;
     }}
+    .dd-status-grid {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+        align-items: stretch;
+        margin: 14px 0;
+    }}
+    .dd-status-grid .dd-card {{ height: 100%; box-sizing: border-box; margin-bottom: 0; }}
 
     .dd-kpi-label {{
         color: {theme['text_muted']};
@@ -318,7 +353,7 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     }}
     .dd-kpi-value {{
         color: {theme['text']};
-        font-size: clamp(1.35rem, 1.8vw, 1.9rem);
+        font-size: 1.75rem;
         font-weight: 800;
         letter-spacing: 0;
         line-height: 1.15;
@@ -336,6 +371,21 @@ def inject_theme_css(theme: dict[str, str]) -> str:
         min-height: 2.05em;
     }}
     .dd-kpi-label + .dd-kpi-value {{ min-height: 2.25rem; }}
+
+    .dd-section-header {{ margin: 24px 0 10px; }}
+    .dd-section-header h3 {{ margin: 0; font-size: 1.35rem; line-height: 1.25; }}
+    .dd-section-description {{
+        color: {theme['text_muted']};
+        font-size: 0.88rem;
+        line-height: 1.4;
+        margin-top: 3px;
+    }}
+
+    .dd-onboarding-step {{
+        padding: 8px 12px 8px 0;
+        border-top: 2px solid {theme['border']};
+    }}
+    .dd-onboarding-step b {{ display: block; margin: 5px 0 2px; }}
 
     .dd-badge {{
         display: inline-block;
@@ -424,5 +474,9 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     }}
 
     .dd-divider {{ border: none; border-top: 1px solid {theme['border']}; margin: 22px 0; }}
+    @media (max-width: 900px) {{
+        .dd-status-grid {{ grid-template-columns: 1fr; gap: 10px; }}
+        .dd-kpi-value {{ font-size: 1.5rem; }}
+    }}
     </style>
     """

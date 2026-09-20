@@ -15,7 +15,12 @@ def assert_ok(app):
 
 def kpis(app):
     cards = [item.value for item in app.markdown if item.value.startswith('<div class="dd-card" style="margin-bottom:0;">')]
-    return dict(re.findall(r'class="dd-kpi-label">([^<]+)</div><div class="dd-kpi-value">([^<]+)', "".join(cards)))
+    return dict(
+        re.findall(
+            r'class="dd-kpi-label">([^<]+)</div><div class="dd-kpi-value"[^>]*>([^<]+)',
+            "".join(cards),
+        )
+    )
 
 
 def main():

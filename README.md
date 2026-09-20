@@ -19,21 +19,19 @@ optional; ohne ihn steht eine lokale, deterministische KPI-Zusammenfassung berei
 ## Qualität prüfen
 
 ```bash
-work/.venv/bin/python -m py_compile main.py core/*.py
-work/.venv/bin/python qa_test_final.py
-work/.venv/bin/python qa_runtime.py
-work/.venv/bin/python qa_beta_security.py
-work/.venv/bin/python qa_production.py
-work/.venv/bin/python qa_golden_datasets.py
-work/.venv/bin/python qa_billing.py
+work/.venv/bin/python qa_all.py
 work/.venv/bin/pip check
 ```
+
+`qa_all.py` umfasst Kernlogik, UI-Formatierung, Runtime-Flows, Security,
+Produktionskonfiguration, Golden Datasets und das deaktivierte Stripe-Testbilling.
 
 ## Architektur
 
 - `main.py`: UI, Session State und Ablaufsteuerung
 - `core/data_processing.py`: Upload-Prüfung, Import, Mapping, Bereinigung
 - `core/analysis.py`: zentrale KPI- und Zeitvergleichslogik
+- `core/formatting.py`: deutsche Zahlen-, Kurz- und Datumsformatierung
 - `core/security.py`: PII-Erkennung, Maskierung und Prompt-Bereinigung
 - `core/ai_insights.py`: Gemini-Aufruf und lokaler Fallback
 - `core/report_builder.py`: PDF aus den zentral berechneten Kennzahlen

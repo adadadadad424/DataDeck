@@ -29,23 +29,10 @@ from typing import Optional
 
 from jinja2 import Environment, select_autoescape
 
+from .formatting import format_de_number
 from .runtime_security import APP_VERSION
 
 BRAND = "#4F46E5"
-
-
-def format_de_number(value, decimals: int = 2) -> str:
-    """Formatiert eine Zahl im deutschen Format. NaN (z.B. Marge bei
-    Umsatz=0) wird als 'n/v' ausgegeben statt als 'nan' oder erfundene
-    Zahl - siehe core/analysis.py: Umsatz=0 -> Marge=NaN."""
-    try:
-        f_value = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    if f_value != f_value:  # NaN-Check ohne math-Import
-        return "—"
-    formatted = f"{f_value:,.{decimals}f}"
-    return formatted.replace(',', 'X').replace('.', ',').replace('X', '.')
 
 
 def _blocking_url_fetcher(url, *args, **kwargs):
@@ -169,8 +156,8 @@ TEMPLATE_HTML = """
     {% endif %}
 
     {% if insights %}
-    <h2>AI Insights</h2>
-    <div class="insight-box"><span class="insight-tag">Beobachtung</span>{{ insights.zusammenfassung }}</div>
+    <h2>KI-Insights</h2>
+    <div class="insight-box"><span class="insight-tag">Kurzfassung</span>{{ insights.zusammenfassung }}</div>
     <div class="insight-box"><span class="insight-tag">Bedeutung</span>{{ insights.ziel_analyse }}</div>
     <strong style="font-size:10.5pt;">Handlungsoptionen</strong>
     <ul>
@@ -182,7 +169,7 @@ TEMPLATE_HTML = """
     <div class="insight-box"><span class="insight-tag">Datengrundlage</span>{{ insights.datengrundlage }}</div>
     {% endif %}
     {% else %}
-    <h2>AI Insights</h2>
+    <h2>KI-Insights</h2>
     <p class="empty-note">Für diesen Bericht wurde keine KI-Analyse erstellt.</p>
     {% endif %}
 

@@ -47,7 +47,8 @@ from core.ai_insights import (
 )
 from core.analysis import calculate_kpis, filter_data
 from core.data_processing import assess_data_quality, clean_and_prepare_data, load_and_validate_file
-from core.report_builder import format_de_number, generate_pdf
+from core.formatting import format_compact_number, format_de_date, format_de_number
+from core.report_builder import generate_pdf
 from core.security import escape_html, mask_pii, scan_dataframe_for_pii
 from core.theme import DEFAULT_THEME, get_theme, inject_theme_css, plotly_layout_colors
 from core.runtime_security import (
@@ -320,8 +321,24 @@ def _compute_insight_key(kpis: dict, ziel_marge: float | None, niche: str, is_pr
     ])
 
 
-def _card(html_inner: str) -> None:
-    st.markdown(f'<div class="dd-card">{html_inner}</div>', unsafe_allow_html=True)
+def _card_html(html_inner: str, extra_class: str = "") -> str:
+    class_name = f"dd-card {extra_class}".strip()
+    return f'<div class="{class_name}">{html_inner}</div>'
+
+
+def _card(html_inner: str, extra_class: str = "") -> None:
+    st.markdown(_card_html(html_inner, extra_class), unsafe_allow_html=True)
+
+
+def _section_header(title: str, description: str = "") -> None:
+    description_html = (
+        f'<div class="dd-section-description">{escape_html(description)}</div>'
+        if description else ""
+    )
+    st.markdown(
+        f'<div class="dd-section-header"><h3>{escape_html(title)}</h3>{description_html}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _kpi_card(
@@ -330,18 +347,20 @@ def _kpi_card(
     delta_text: str = "",
     delta_kind: str = "na",
     subtext: str = "",
+    exact_value: str = "",
 ) -> str:
     delta_cls = {"pos": "dd-kpi-delta-pos", "neg": "dd-kpi-delta-neg"}.get(delta_kind, "dd-kpi-delta-na")
     delta_html = f'<div class="{delta_cls}">{delta_text}</div>' if delta_text else ""
     subtext_html = f'<div class="dd-kpi-reason">{escape_html(subtext) if subtext else "&nbsp;"}</div>'
+    value_title = f' title="{escape_html(exact_value)}"' if exact_value else ""
     return (
         f'<div class="dd-card" style="margin-bottom:0;">'
         f'<div class="dd-kpi-label">{label}</div>'
-        f'<div class="dd-kpi-value">{value}</div>{delta_html}{subtext_html}</div>'
+        f'<div class="dd-kpi-value"{value_title}>{value}</div>{delta_html}{subtext_html}</div>'
     )
 
 
-def _data_preview_table(df: pd.DataFrame, max_rows: int = 200) -> str:
+def _data_preview_table(df: pd.DataFrame, max_rows: int = 100) -> str:
     preview = df.head(max_rows)
     headers = "".join(f"<th>{escape_html(col)}</th>" for col in preview.columns)
     rows = []
@@ -351,7 +370,7 @@ def _data_preview_table(df: pd.DataFrame, max_rows: int = 200) -> str:
             if pd.isna(value):
                 display_values.append("–")
             elif isinstance(value, (pd.Timestamp, datetime.datetime, datetime.date)):
-                display_values.append(pd.Timestamp(value).strftime("%d.%m.%Y"))
+                display_values.append(format_de_date(value))
             elif isinstance(value, str):
                 display_values.append(escape_html(mask_pii(value)))
             else:
@@ -410,6 +429,16 @@ def _option_index(options: list, selected) -> int:
     return 0
 
 
+def _mapping_requires_review(warnings: dict | None) -> bool:
+    confidence = (warnings or {}).get("mapping_confidence", {})
+    uncertain = {"mittel", "niedrig", "nicht_verfuegbar"}
+    core_uncertain = any(confidence.get(role) in uncertain for role in ("umsatz", "kategorie"))
+    no_reliable_profit_basis = (
+        confidence.get("gewinn") in uncertain and confidence.get("kosten") in uncertain
+    )
+    return core_uncertain or no_reliable_profit_basis
+
+
 def _top_categories_with_other(category_data: pd.DataFrame, limit: int = 10) -> pd.DataFrame:
     """Begrenzt unruhige Diagramme, ohne den Rest der Daten zu verschweigen."""
     sorted_data = category_data.sort_values("Umsatz_Clean", ascending=False).copy()
@@ -436,8 +465,10 @@ def _top_categories_with_other(category_data: pd.DataFrame, limit: int = 10) -> 
 def _render_column_mapping_controls(df_raw: pd.DataFrame, warnings: dict | None = None) -> None:
     columns = list(df_raw.columns)
     mapping = st.session_state.get("column_mapping") or {}
+    review_required = _mapping_requires_review(warnings)
 
-    with st.expander("Spalten manuell zuordnen", expanded=False):
+    label = "Spaltenzuordnung prüfen" if review_required else "Spaltenzuordnung"
+    with st.expander(label, expanded=False):
         if warnings:
             labels = {"umsatz": "Umsatz", "gewinn": "Gewinn", "kosten": "Kosten", "kategorie": "Kategorie", "datum": "Datum"}
             sources = {
@@ -452,12 +483,12 @@ def _render_column_mapping_controls(df_raw: pd.DataFrame, warnings: dict | None 
                 "bestaetigt": "manuell bestätigt", "nicht_verfuegbar": "nicht erkannt",
             }
             for key, label in labels.items():
-                confidence = warnings.get("mapping_confidence", {}).get(key, "nicht_verfuegbar")
+                role_confidence = warnings.get("mapping_confidence", {}).get(key, "nicht_verfuegbar")
                 st.markdown(
                     f"**{label}:** {escape_html(sources.get(key) or '—')}  "
-                    f"\nSicherheit: {confidence_labels.get(confidence, confidence)}"
+                    f"\nSicherheit: {confidence_labels.get(role_confidence, role_confidence)}"
                 )
-        st.caption("Zuordnung nur ändern, wenn die automatische Erkennung nicht zur Datei passt.")
+        st.caption("Ändern Sie die Zuordnung nur, wenn die automatische Erkennung nicht zur Datei passt.")
         with st.form("column_mapping_form"):
             c1, c2 = st.columns(2)
             auto_options = ["__auto__"] + columns
@@ -547,7 +578,6 @@ def main() -> None:
         )
         st.markdown('<div class="dd-muted">Analyse für Berater &amp; Kanzleien</div>', unsafe_allow_html=True)
         st.caption(f"Beta · {APP_VERSION}")
-        st.caption("Beta-Version · Ergebnisse vor geschäftlicher Weiterverwendung prüfen.")
         st.markdown('<hr class="dd-divider" style="margin:14px 0;">', unsafe_allow_html=True)
 
         dark_mode = st.toggle(
@@ -616,7 +646,7 @@ def main() -> None:
             "CSV oder Excel hochladen", type=["csv", "xlsx"], key="file_uploader",
             label_visibility="collapsed",
         )
-        st.markdown('<div class="dd-muted" style="margin-top:-8px;">CSV, XLSX &middot; sichere Analyse-Pipeline</div>', unsafe_allow_html=True)
+        st.markdown('<div class="dd-muted" style="margin-top:-8px;">CSV oder XLSX · bis zu 100.000 Zeilen</div>', unsafe_allow_html=True)
 
         if st.button("Demo-Daten laden", key="demo_btn", width="stretch"):
             _reset_filters()
@@ -628,7 +658,6 @@ def main() -> None:
             _reset_analysis_outputs()
 
         st.markdown('<hr class="dd-divider" style="margin:14px 0;">', unsafe_allow_html=True)
-        st.markdown('<div class="dd-muted">DataDeck &middot; Sichere Analyse-Pipeline</div>', unsafe_allow_html=True)
         if is_production and hasattr(st, "link_button"):
             st.link_button("Feedback geben", os.environ["BETA_FEEDBACK_URL"], width="stretch")
             st.link_button("Impressum", os.environ["LEGAL_IMPRINT_URL"], width="stretch")
@@ -693,28 +722,26 @@ def main() -> None:
 
     # --- Empty State ---
     if st.session_state.raw_df is None:
-        st.markdown('<div class="dd-eyebrow">DATA INTELLIGENCE</div>', unsafe_allow_html=True)
-        st.markdown('<h1 style="margin-top:0;">Vom Kundendatensatz zum Management-Report in Minuten.</h1>', unsafe_allow_html=True)
+        st.markdown('<div class="dd-eyebrow">NEUE ANALYSE</div>', unsafe_allow_html=True)
+        st.markdown('<h1 style="margin-top:0;">Unternehmensdaten auswerten</h1>', unsafe_allow_html=True)
         st.markdown(
             '<p class="dd-muted" style="font-size:1.05rem;max-width:640px;">'
-            "CSV oder Excel hochladen. DataDeck prüft die Daten, berechnet belastbare "
-            "Kennzahlen und erstellt nachvollziehbare Insights samt PDF-Report.</p>",
+            "Laden Sie eine CSV- oder Excel-Datei hoch. DataDeck prüft die Struktur, "
+            "berechnet belastbare Kennzahlen und bereitet die Ergebnisse für den Bericht auf.</p>",
             unsafe_allow_html=True,
         )
         st.markdown('<div class="dd-empty-hero">', unsafe_allow_html=True)
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         steps = [
-            ("1", "CSV/XLSX hochladen", "Links in der Seitenleiste - oder mit Demo-Daten starten."),
-            ("2", "Daten werden geprüft", "Spalten erkannt, Formate bereinigt, PII gescannt."),
-            ("3", "Kennzahlen berechnen", "Nur Werte, die aus der Datei belastbar ableitbar sind."),
-            ("4", "KI-Insights &amp; PDF", "Interpretation der Kennzahlen, fertiger Report."),
+            ("1", "Datei hochladen", "CSV oder XLSX links auswählen oder Demo-Daten nutzen."),
+            ("2", "Zuordnung prüfen", "Erkannte Finanz-, Segment- und Datumsspalten bestätigen."),
+            ("3", "Ergebnisse nutzen", "Kennzahlen prüfen, KI-Einordnung starten und PDF erstellen."),
         ]
-        for col, (num, title, desc) in zip([c1, c2, c3, c4], steps):
+        for col, (num, title, desc) in zip([c1, c2, c3], steps):
             with col:
                 st.markdown(
-                    f'<div class="dd-card" style="min-height:150px;">'
-                    f'<div class="dd-step-num">{num}</div><br>'
-                    f'<b>{title}</b><br><span class="dd-muted">{desc}</span></div>',
+                    f'<div class="dd-onboarding-step"><div class="dd-step-num">{num}</div>'
+                    f'<b>{title}</b><span class="dd-muted">{desc}</span></div>',
                     unsafe_allow_html=True,
                 )
         st.markdown('</div>', unsafe_allow_html=True)
@@ -749,7 +776,6 @@ def main() -> None:
         _log_event("DATA_PREPARATION_ERROR", logging.ERROR, error_type=safe_exception_name(e))
         return
 
-    _render_column_mapping_controls(df_raw, warnings)
     if revenue_mode_changed:
         st.rerun()
 
@@ -757,71 +783,89 @@ def main() -> None:
     demo_badge = '<span class="dd-badge dd-badge-demo">DEMO-DATEN</span> ' if st.session_state.data_source == "demo" else ""
     st.markdown(f'<h2 style="margin-bottom:2px;">{demo_badge}Datenübersicht</h2>', unsafe_allow_html=True)
 
-    sc1, sc2, sc3 = st.columns([3, 2, 2])
-    with sc1:
-        _card(
-            f'<div class="dd-eyebrow">IMPORT</div>'
-            f'<b>{format_de_number(len(df_raw), 0)} Datensätze erfolgreich geladen</b><br>'
-            f'<span class="dd-muted">{len(df_raw.columns)} Spalten erkannt · '
-            f'{warnings["duplicate_rows"]} Duplikate gefunden (nicht entfernt)</span><br>'
-            f'<span class="dd-muted">Umsatz: {escape_html(warnings.get("umsatz_source") or "Nicht verfügbar")} · '
-            f'Gewinn: {escape_html(warnings.get("gewinn_source") or "Nicht verfügbar")}</span>'
-            + (
-                f'<br><span class="dd-muted">Sheet: {escape_html(warnings.get("source_sheet"))}</span>'
-                if warnings.get("source_sheet") else ""
-            )
-            + (
-                f'<br><span class="dd-muted">{len(warnings.get("sheet_names", []))} Tabellenblätter erkannt; '
-                f'analysiert wird {escape_html(warnings.get("source_sheet"))}.</span>'
-                if len(warnings.get("sheet_names", [])) > 1 else ""
-            )
-            + (
-                '<br><span class="dd-muted">Titel-/Metadatenzeile automatisch übersprungen.</span>'
-                if warnings.get("header_promoted") else ""
-            )
+    import_status = (
+        f'<div class="dd-eyebrow">IMPORT</div>'
+        f'<b>{format_de_number(len(df_raw), 0)} Datensätze erfolgreich geladen</b><br>'
+        f'<span class="dd-muted">{len(df_raw.columns)} Spalten erkannt · '
+        f'{warnings["duplicate_rows"]} Duplikate gefunden (nicht entfernt)</span><br>'
+        f'<span class="dd-muted">Umsatz: {escape_html(warnings.get("umsatz_source") or "Nicht verfügbar")} · '
+        f'Gewinn: {escape_html(warnings.get("gewinn_source") or "Nicht verfügbar")}</span>'
+        + (
+            f'<br><span class="dd-muted">Tabellenblatt: {escape_html(warnings.get("source_sheet"))}</span>'
+            if warnings.get("source_sheet") else ""
         )
-    with sc2:
-        if pii_scan["treffer_gesamt"] > 0:
-            pii_types = ", ".join(pii_scan.get("typen", [])) or "Muster"
-            _card(
-                '<div class="dd-eyebrow">DATENSCHUTZSTATUS</div>'
-                '<span class="dd-badge dd-badge-warning">⚠ Überprüfung empfohlen</span><br>'
-                f'<span class="dd-muted">{pii_scan["treffer_gesamt"]} mögliche personenbezogene Muster in '
-                f'{escape_html(", ".join(pii_scan["spalten_mit_treffern"]))}. Typen: {escape_html(pii_types)}. Automatische Mustererkennung, keine '
-                f'vollständige DSGVO-Anonymisierung. An die KI gehen ausschließlich aggregierte Kennzahlen.</span>'
-            )
-        else:
-            _card(
-                '<div class="dd-eyebrow">DATENSCHUTZSTATUS</div>'
-                '<span class="dd-badge dd-badge-success">✓ Keine sensiblen Muster erkannt</span>'
-            )
-    with sc3:
-        quality_labels = {
-            "hoch": ("dd-badge-success", "✓ Hoch"),
-            "mittel": ("dd-badge-warning", "Mittel"),
-            "eingeschraenkt": ("dd-badge-warning", "Eingeschränkt"),
-            "nicht_ausreichend": ("dd-badge-warning", "Nicht ausreichend"),
-        }
-        quality_class, quality_label = quality_labels[data_quality["level"]]
-        _card(
-            '<div class="dd-eyebrow">ANALYSEQUALITÄT</div>'
-            f'<span class="dd-badge {quality_class}">{quality_label}</span><br>'
-            f'<span class="dd-muted">{data_quality["completeness"]:.0%} vollständig · '
-            f'{data_quality["missing_cells"]} fehlende Zellen · '
-            f'{data_quality["invalid_numeric"]} ungültige Finanzwerte · '
-            f'{data_quality["outlier_count"]} mögliche Ausreißer</span>'
+        + (
+            f'<br><span class="dd-muted">{len(warnings.get("sheet_names", []))} Tabellenblätter erkannt.</span>'
+            if len(warnings.get("sheet_names", [])) > 1 else ""
         )
+        + (
+            '<br><span class="dd-muted">Metadatenzeile automatisch übersprungen.</span>'
+            if warnings.get("header_promoted") else ""
+        )
+    )
+
+    pii_type_labels = {
+        "email": "E-Mail", "person_name": "Name", "phone": "Telefon",
+        "iban": "IBAN", "credit_card": "Kreditkarte", "address": "Adresse",
+        "birth_date": "Geburtsdatum", "tax_id": "Steuer-ID", "ip": "IP-Adresse",
+    }
+    pii_types = ", ".join(
+        pii_type_labels.get(item, item.replace("_", " ").title())
+        for item in pii_scan.get("typen", [])
+    ) or "Muster"
+    privacy_status = (
+        '<div class="dd-eyebrow">DATENSCHUTZSTATUS</div>'
+        '<span class="dd-badge dd-badge-warning">⚠ Überprüfung empfohlen</span><br>'
+        f'<span class="dd-muted">{pii_scan["treffer_gesamt"]} mögliche personenbezogene Muster in '
+        f'{escape_html(", ".join(pii_scan["spalten_mit_treffern"]))}.</span><br>'
+        f'<span class="dd-muted">{escape_html(pii_types)} · Details unten</span>'
+        if pii_scan["treffer_gesamt"] > 0 else
+        '<div class="dd-eyebrow">DATENSCHUTZSTATUS</div>'
+        '<span class="dd-badge dd-badge-success">✓ Keine sensiblen Muster erkannt</span>'
+    )
+
+    quality_labels = {
+        "hoch": ("dd-badge-success", "✓ Hoch"),
+        "mittel": ("dd-badge-warning", "Mittel"),
+        "eingeschraenkt": ("dd-badge-warning", "Eingeschränkt"),
+        "nicht_ausreichend": ("dd-badge-warning", "Nicht ausreichend"),
+    }
+    quality_class, quality_label = quality_labels[data_quality["level"]]
+    quality_status = (
+        '<div class="dd-eyebrow">ANALYSEQUALITÄT</div>'
+        f'<span class="dd-badge {quality_class}">{quality_label}</span><br>'
+        f'<span class="dd-muted">{data_quality["completeness"]:.0%} vollständig · '
+        f'{data_quality["missing_cells"]} fehlende Zellen · '
+        f'{data_quality["invalid_numeric"]} ungültige Finanzwerte · '
+        f'{data_quality["outlier_count"]} mögliche Ausreißer</span>'
+    )
+    st.markdown(
+        '<div class="dd-status-grid">'
+        f'{_card_html(import_status)}{_card_html(privacy_status)}{_card_html(quality_status)}'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    if pii_scan["treffer_gesamt"] > 0:
+        with st.expander("Datenschutzdetails", expanded=False):
+            st.write(
+                "Die Erkennung ist ein automatischer Hinweis und keine vollständige "
+                "DSGVO-Anonymisierung. Personenbezogene Muster werden in der Vorschau maskiert."
+            )
+            st.caption("An Gemini werden ausschließlich aggregierte Kennzahlen übertragen, niemals Rohzeilen.")
 
     if data_quality["issues"]:
         with st.expander("Datenqualität im Detail", expanded=data_quality["level"] == "nicht_ausreichend"):
             for issue in data_quality["issues"]:
                 st.markdown(f"**{issue['title']}**  \n{issue['detail']}")
 
+    _render_column_mapping_controls(df_raw, warnings)
+
     if data_quality["level"] == "nicht_ausreichend":
         st.error("Die Datenbasis ist für eine belastbare Gesamtanalyse noch nicht ausreichend. Details stehen oben.")
 
     # --- Filter ---
-    st.markdown('<h3>Filter</h3>', unsafe_allow_html=True)
+    _section_header("Filter", "Grenzen Sie die aktuelle Auswertung ein.")
     with st.form("filter_form"):
         if warnings.get("revenue_only_mode"):
             min_gewinn, min_marge = 0.0, 0.0
@@ -865,7 +909,7 @@ def main() -> None:
     effective_target = ziel_marge if kpis["profit_available"] and financial_available else None
 
     # --- KPI-Übersicht ---
-    st.markdown('<h3>Kennzahlen</h3>', unsafe_allow_html=True)
+    _section_header("Kennzahlen", "Die wichtigsten Werte des aktuellen Filterstands.")
     marge_ist_nan = kpis["aktuelle_marge"] != kpis["aktuelle_marge"]
     if not financial_available:
         marge_delta, marge_kind = "Nicht aggregierbar", "na"
@@ -879,8 +923,8 @@ def main() -> None:
         marge_kind = "pos" if diff >= 0 else "neg"
 
     k1, k2, k3, k4 = st.columns(4)
-    with k1: st.markdown(_kpi_card("Umsatz", "—" if not financial_available else f"{format_de_number(kpis['gesamt_umsatz'], 0)} €", subtext=kpis["metrics"]["umsatz"]["reason"]), unsafe_allow_html=True)
-    with k2: st.markdown(_kpi_card("Gewinn", "—" if not kpis["profit_available"] or not financial_available else f"{format_de_number(kpis['gesamt_gewinn'], 0)} €", subtext=kpis["metrics"]["gewinn"]["reason"]), unsafe_allow_html=True)
+    with k1: st.markdown(_kpi_card("Umsatz", "—" if not financial_available else f"{format_compact_number(kpis['gesamt_umsatz'])} €", subtext=kpis["metrics"]["umsatz"]["reason"], exact_value="" if not financial_available else f"{format_de_number(kpis['gesamt_umsatz'])} €"), unsafe_allow_html=True)
+    with k2: st.markdown(_kpi_card("Gewinn", "—" if not kpis["profit_available"] or not financial_available else f"{format_compact_number(kpis['gesamt_gewinn'])} €", subtext=kpis["metrics"]["gewinn"]["reason"], exact_value="" if not kpis["profit_available"] or not financial_available else f"{format_de_number(kpis['gesamt_gewinn'])} €"), unsafe_allow_html=True)
     with k3: st.markdown(_kpi_card("Marge", "—" if not kpis["profit_available"] or not financial_available else ("—" if marge_ist_nan else f"{format_de_number(kpis['aktuelle_marge'], 1)} %"), marge_delta, marge_kind, kpis["metrics"]["marge"]["reason"]), unsafe_allow_html=True)
     with k4: st.markdown(_kpi_card("Datensätze", format_de_number(kpis['anzahl_zeilen'], 0)), unsafe_allow_html=True)
 
@@ -891,10 +935,10 @@ def main() -> None:
         ranking_label = kpis["ranking_label"]
         with tp1:
             _card(f'<div class="dd-eyebrow">{"GEWINNSTÄRKSTES SEGMENT" if kpis["profit_available"] else "UMSATZSTÄRKSTES SEGMENT"}</div><b>{escape_html(top["Kategorie_Clean"])}</b><br>'
-                  f'<span class="dd-muted">{format_de_number(top[ranking_column])} € {ranking_label}</span>')
+                  f'<span class="dd-muted">{format_compact_number(top[ranking_column])} € {ranking_label}</span>')
         with tp2:
             _card(f'<div class="dd-eyebrow">{"GEWINNSCHWÄCHSTES SEGMENT" if kpis["profit_available"] else "UMSATZSCHWÄCHSTES SEGMENT"}</div><b>{escape_html(flop["Kategorie_Clean"])}</b><br>'
-                  f'<span class="dd-muted">{format_de_number(flop[ranking_column])} € {ranking_label}</span>')
+                  f'<span class="dd-muted">{format_compact_number(flop[ranking_column])} € {ranking_label}</span>')
 
     layout = plotly_layout_colors(theme)
     if not financial_available:
@@ -905,7 +949,7 @@ def main() -> None:
     # --- Entwicklung ---
     time_analysis = kpis.get("time_analysis", {})
     if financial_available and time_analysis.get("available"):
-        st.markdown('<h3>Entwicklung</h3>', unsafe_allow_html=True)
+        _section_header("Entwicklung", "Zeitliche Veränderung und vergleichbare Zeiträume.")
         if time_analysis.get("comparison_available"):
             change = time_analysis["revenue_change_pct"]
             change_text = "Nicht verfügbar" if change != change else f"{change:+.1f} %"
@@ -948,7 +992,7 @@ def main() -> None:
 
     # --- Charts ---
     if financial_available:
-        st.markdown('<h3>Charts</h3>', unsafe_allow_html=True)
+        _section_header("Segmente", "Stärkste und schwächste Kategorien im Vergleich.")
         cat_data = _top_categories_with_other(kpis["kategorien_daten"], limit=10)
         cat_data = cat_data.sort_values(kpis["ranking_metric"], ascending=False)
 
@@ -986,16 +1030,13 @@ def main() -> None:
         st.session_state.pdf_filename = None
         st.session_state.pdf_context_key = None
 
-    st.markdown('<h3>AI Insights</h3>', unsafe_allow_html=True)
-    st.markdown('<div class="dd-muted">KI-gestützte Einordnung der berechneten Kennzahlen.</div>', unsafe_allow_html=True)
+    _section_header("KI-Insights", "Einordnung ausschließlich auf Basis berechneter, aggregierter Kennzahlen.")
 
     if ist_veraltet:
         st.warning("Diese Analyse basiert auf einem vorherigen Filterstand. Bitte aktualisieren.")
     gemini_configured = bool(os.getenv("GEMINI_API_KEY"))
-    if not gemini_configured:
-        st.info("Gemini ist nicht eingerichtet. DataDeck kann stattdessen eine lokale KPI-Analyse erstellen.")
 
-    label = "Analyse aktualisieren" if st.session_state.ai_insights else "AI-Analyse starten"
+    label = "Analyse aktualisieren" if st.session_state.ai_insights else "KI-Analyse starten"
     ai_clicked = st.button(
         label,
         type="primary",
@@ -1078,6 +1119,9 @@ def main() -> None:
                     _log_event("AI_UNEXPECTED_ERROR", logging.ERROR, error_type=safe_exception_name(e))
         st.session_state.ai_in_progress = False
 
+    if not gemini_configured and not st.session_state.ai_insights:
+        st.info("Gemini ist nicht eingerichtet. DataDeck kann stattdessen eine lokale KPI-Analyse erstellen.")
+
     if st.session_state.ai_insights:
         ai = st.session_state.ai_insights
         source_label = "Gemini" if st.session_state.ai_insights_source == "gemini" else "Lokale KPI-Analyse"
@@ -1085,7 +1129,7 @@ def main() -> None:
         status_kind = "risk" if (effective_target is not None and not marge_ist_nan and kpis["aktuelle_marge"] < effective_target) else "recommend"
         st.markdown(
             '<div class="dd-insight-card">'
-            '<span class="dd-insight-tag">BEOBACHTUNG</span>'
+            '<span class="dd-insight-tag">KURZFASSUNG</span>'
             f'<div class="dd-insight-text">{escape_html(ai.get("zusammenfassung", ""))}</div>'
             '</div>',
             unsafe_allow_html=True,
@@ -1115,13 +1159,13 @@ def main() -> None:
             st.caption("An Gemini wurden nur diese aggregierten Kennzahlen übertragen, keine Rohzeilen.")
 
     # --- Daten ---
-    st.markdown('<h3>Detaildaten</h3>', unsafe_allow_html=True)
+    _section_header("Detaildaten", "Maskierte Vorschau der ersten 100 gefilterten Datensätze.")
     st.markdown(_data_preview_table(df_filtered), unsafe_allow_html=True)
-    if len(df_filtered) > 200:
-        st.caption("Vorschau zeigt die ersten 200 gefilterten Datensätze.")
+    if len(df_filtered) > 100:
+        st.caption("Vorschau zeigt die ersten 100 gefilterten Datensätze.")
 
     # --- PDF ---
-    st.markdown('<h3>Reports</h3>', unsafe_allow_html=True)
+    _section_header("Bericht", "Managementreport mit Kennzahlen, Methodik und aktueller KI-Einordnung.")
     if not is_premium:
         st.info("PDF-Reports sind in dieser Demo hinter dem Premium-Schalter. Aktivieren Sie links **Demo: Premium-Funktionen**, um den Export zu testen.")
     else:
@@ -1155,7 +1199,7 @@ def main() -> None:
                         revenue_only=st.session_state.revenue_only_mode,
                         data_quality=data_quality,
                     )
-                    st.session_state.pdf_filename = f"DataDeck_Report_{datetime.date.today()}.pdf"
+                    st.session_state.pdf_filename = f"DataDeck_Analyse_{datetime.date.today():%Y-%m}.pdf"
                     st.session_state.pdf_context_key = report_context
                     _log_event(
                         "PDF_SUCCESS", bytes=len(st.session_state.pdf_bytes),
