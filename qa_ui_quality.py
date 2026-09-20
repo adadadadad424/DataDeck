@@ -1,6 +1,7 @@
 """Fokussierte Regressionstests fuer darstellende UI-Logik."""
 
 import datetime
+import base64
 import unittest
 
 from core.formatting import format_compact_number, format_de_date, format_de_number
@@ -64,7 +65,10 @@ class UIQualityTests(unittest.TestCase):
         self.assertEqual(validate_accent_color("#2277AA"), "#2277AA")
 
     def test_logo_accepts_real_png_signature_only(self):
-        uri = validated_logo_data_uri(b"\x89PNG\r\n\x1a\ncontent")
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        uri = validated_logo_data_uri(png)
         self.assertTrue(uri.startswith("data:image/png;base64,"))
         with self.assertRaises(ValueError):
             validated_logo_data_uri(b"<svg><script>alert(1)</script></svg>")

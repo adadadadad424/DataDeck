@@ -1,127 +1,117 @@
 # DataDeck Security Notes
 
-Stand: 20.09.2026, Version 0.8.0-beta.
+Stand: 20.09.2026, Version 0.9.1-beta.
 
-## Datenfluss
+## Sicherheitsgrenzen
 
-1. CSV/XLSX wird als Bytes im Arbeitsspeicher der jeweiligen Streamlit-Session empfangen.
-2. Dateityp, Größe, Binärinhalt, Spaltenzahl und XLSX-ZIP-Struktur werden geprüft.
-3. Pandas/OpenPyXL lesen die Datei aus dem Speicher. DataDeck legt keine Upload-Datei ab.
-4. Bereinigte Daten und Ergebnisse liegen ausschließlich in `st.session_state` dieser Session.
-5. PDF-Reports entstehen als Bytes im Session State, nicht als gemeinsamer Dateipfad.
-6. Gemini erhält nur aggregierte KPIs und bereinigte Kategorienamen. Rohzeilen werden nicht übertragen.
-7. Nur wenn Billing ausdrücklich aktiviert wird, speichert PostgreSQL OIDC-Nutzerzuordnung,
-   E-Mail, technische Stripe-IDs, Abo-Status und verarbeitete Webhook-Event-IDs. Uploads,
-   Kennzahlen, KI-Inhalte und PDFs gelangen nicht in diese Datenbank.
+- Uploads und Rohzeilen bleiben im RAM der jeweiligen Streamlit-Session.
+- DataDeck speichert keine Upload-Dateien. PDF-Dateien entstehen als Bytes im
+  Session State und verwenden keinen gemeinsamen Dateipfad.
+- Gemini erhaelt ausschliesslich deterministisch berechnete Aggregate und
+  begrenzte, maskierte Kategorienamen. Rohzeilen werden nicht uebertragen.
+- PostgreSQL speichert bei aktivierter Historie nur Besitzerzuordnung,
+  Dataset-Fingerprint, Mapping, Aggregate, freigegebene Insight-Texte und
+  Report-Metadaten. Jede Abfrage wird an die angemeldete Besitzer-ID gebunden.
+- Logout und Identitaetswechsel entfernen sensible Session-Daten und rotieren
+  die interne Session-ID.
 
-## Isolation
+## Zentrale Lastgrenzen
 
-- Es existieren keine globalen DataFrames, Uploads, Analyseergebnisse oder PDF-Pfade.
-- Der Dataset-Schlüssel basiert auf SHA-256 des Inhalts, nicht nur auf dem Dateinamen.
-- Filter, Mapping, KI-Ergebnis und PDF werden pro Streamlit-Session gehalten.
-- Logout entfernt hochgeladene und abgeleitete Kundendaten aus der Session.
-- Ein automatisierter ALPHA-/BETA-Test prüft zwei getrennte App-Sessions mit demselben Dateinamen.
+Die Anwendung erzwingt pro Prozess Rate-, Parallelitaets- und globale Grenzen.
+Die Standardwerte sind konservativ und ueber `SECURITY_<ACTION>_*` anpassbar.
 
-Streamlit-Sessions sind an die WebSocket-Sitzung gebunden. Ein Refresh oder Server-Neustart
-kann den Zustand verwerfen. DataDeck verspricht in dieser Beta keine dauerhafte Speicherung.
-Der OIDC-Login-Cookie kann zwischen Tabs geteilt werden; die Datenzustände der Tabs bleiben
-getrennte Streamlit-Sessions.
+| Aktion | Nutzerlimit | Parallel pro Nutzer | Parallel global |
+|---|---:|---:|---:|
+| Login | 10 / 10 Minuten | 1 | 50 |
+| Upload | 12 / Stunde | 1 | 4 |
+| Analyse | 60 / 10 Minuten | 1 | 4 |
+| AI Insights | 6 / Stunde | 1 | 2 |
+| PDF | 12 / Stunde | 1 | 2 |
+| Checkout | 6 / Stunde | 1 | 10 |
+| Portal | 12 / Stunde | 1 | 10 |
+| Client-Schreibzugriff | 30 / Stunde | 1 | 10 |
+| Stripe-Webhook | 120 / Minute je IP | 4 | 20 |
 
-## Zugriffsschutz
+Ueberlastung wird frueh mit einer generischen Meldung und Wartezeit abgewiesen.
+Diese In-Memory-Grenzen schuetzen eine einzelne Instanz. Sie ersetzen weder
+Edge-Rate-Limiting noch WAF- oder DDoS-Schutz des Hosters.
 
-Production läuft standardmäßig nur mit Streamlit OIDC und serverseitiger E-Mail-Allowlist.
-Eigene Passwortspeicherung wurde bewusst nicht implementiert. In `APP_ENV=production`
-sperrt DataDeck den Zugriff, wenn Auth deaktiviert oder die Allowlist leer ist.
+## Upload- und Parser-Schutz
 
-Erforderlich:
+- Nur `.csv` und `.xlsx`, Standardlimit 25 MB.
+- Dateiname, Endung, Magic Bytes, Binär-/Steuerzeichen und Struktur werden vor
+  dem Parsen geprueft. Verzeichniswechsel und versteckte Dateinamen sind gesperrt.
+- Maximal 250 Spalten, 250.000 Quellzeilen, 25 XLSX-Sheets, 2.000 ZIP-Eintraege,
+  100 MB entpackter XLSX-Inhalt und 32 MB XML je relevante Arbeitsdatei.
+- ZIP-Pfade, Expansion Ratio, Makros, OLE, ActiveX, externe Links und auffaellige
+  deklarierte Tabellenbereiche werden abgewiesen.
+- CSV-Felder sind auf 100.000 Zeichen begrenzt. Die Parser-Frist betraegt
+  standardmaessig 20 Sekunden und wird zwischen kontrollierten Phasen geprueft.
+- OpenPyXL liest `read_only`, `data_only` und ohne externe Links. Formeln werden
+  nicht ausgefuehrt.
 
-- OIDC-Provider in `.streamlit/secrets.toml` oder im Secret Store der Plattform
-- `AUTH_REQUIRED=true`
-- `BETA_APPROVED_USERS=<kommagetrennte freigegebene E-Mails>`
-- HTTPS und sichere Redirect-URL auf der endgültigen Domain
+Die Parser-Frist ist kooperativ; ein einzelner blockierender Bibliotheksaufruf
+ist kein harter Prozess-Sandbox-Timeout. Fuer oeffentliche, nicht vertrauenswuerdige
+Uploads ist zusaetzliche Isolation in einem Worker-Prozess empfehlenswert.
 
-Production nutzt einen einzelnen, unbenannten Google-OIDC-Provider. Streamlit verwaltet
-`state` und `nonce`; `expose_tokens = []` verhindert, dass Provider-Token in `st.user`
-oder Anwendungslogs gelangen.
+## Inhalte, Bilder und Ausgaben
 
-## Cookies
+- Die PII-Erkennung begrenzt Zelltext, Anzahl gescannter Werte und Gesamtzellen.
+  Sie ist eine Warnhilfe und keine vollstaendige DSGVO-Anonymisierung.
+- Regex-Eingaben werden auf 2.000 Zeichen begrenzt, um pathologische Laufzeiten
+  bei sehr langen Freitexten zu vermeiden.
+- Report-Logos muessen gueltige PNG/JPEG-Dateien sein, werden vollstaendig
+  dekodiert, auf 1 MB, 4.096 x 4.096 und 10 Millionen Pixel begrenzt und ohne
+  Metadaten neu kodiert. SVG ist nicht erlaubt.
+- PDF-Templates maskieren HTML, laden keine externen Ressourcen und lehnen
+  Ausgaben ueber 10 MB ab.
+- Ein spaeterer CSV/XLSX-Export muss Werte mit `=`, `+`, `-` oder `@` gegen
+  Formula Injection neutralisieren. Aktuell gibt es keinen Tabellenexport.
 
-| Cookie | Zweck | Lebensdauer | Sicherheitsprüfung |
-|---|---|---|---|
-| Streamlit Identity Cookie | Anmeldung zwischen Sessions | 30 Tage oder bis Logout | Exakter Framework-Name sowie Secure, HttpOnly und SameSite werden beim HTTPS-OIDC-Abnahmetest im Browser protokolliert. |
-| Provider-Cookies | Google-Anmeldung | durch Google bestimmt | Werden nicht von DataDeck gesetzt oder beim DataDeck-Logout gelöscht. |
+## AI-Schutz
 
-DataDeck setzt keine Tracking- oder Marketing-Cookies. Die noch offene Live-Prüfung ist
-bewusst dokumentiert, weil Cookie-Attribute erst an der finalen HTTPS-Domain belastbar
-verifiziert werden können.
+- Dataset-Texte sind im Prompt ausdruecklich als nicht vertrauenswuerdige Daten
+  markiert. Typische Prompt-Direktiven und personenbezogene Muster werden entfernt.
+- Das JSON-Ergebnis besitzt ein striktes Pydantic-Schema ohne Zusatzfelder sowie
+  Laengen- und Mengenlimits. HTML/Steuerzeichen werden vor Anzeige entfernt.
+- Nach drei Provider-Fehlern oeffnet ein Circuit Breaker standardmaessig 60
+  Sekunden. Fehler fuehren zum lokalen KPI-Fallback, nicht zum Verlust der Analyse.
 
-## Upload-Schutz
+## Auth, Datenbank und Billing
 
-- nur `.csv` und `.xlsx`; altes `.xls` wird abgelehnt
-- Standardlimit 50 MB, maximal 100.000 Premium-Zeilen, 250 Spalten
-- maximal 50 XLSX-Sheets und 250 MB entpackter XLSX-Inhalt
-- Erkennung verdächtiger Kompressionsraten, externer Links und VBA-Bestandteile
-- OpenPyXL läuft mit `read_only`, `data_only` und deaktivierten externen Links
-- Formeln werden nicht ausgeführt; es werden vorhandene Zellwerte gelesen
+- Produktion startet geschlossen, wenn OIDC, Allowlist oder erforderliche Secrets
+  fehlen. Tokens werden nicht an die Anwendung exponiert.
+- PostgreSQL nutzt begrenzte Connect-, Statement-, Lock- und Idle-Transaction-
+  Zeiten. Persistierte JSON- und Textfelder haben Anwendungs- und DB-Limits.
+- Zentrale Autorisierungsfunktionen pruefen Client, Analyse und Report immer gegen
+  den angemeldeten Besitzer. Listen sind paginiert/begrenzt.
+- Stripe-Webhooks akzeptieren maximal 256 KB, pruefen die Signatur mit 300 Sekunden
+  Toleranz, verwerfen unplausible alte Events und speichern Event-IDs idempotent.
+- Billing- und Autorisierungsfehler sind fail-closed. Gemini/PDF/externe Ausfaelle
+  degradieren kontrolliert, ohne bestehende Nutzerdaten oder Berechtigungen zu aendern.
 
-## Datenminimierung
+## Logging, Secrets und HTTP
 
-Analytisch notwendig sind Umsatz sowie optional Gewinn/Kosten, Kategorie und Datum.
-Andere Spalten bleiben für die lokale Vorschau verfügbar, werden dort aber per
-Mustererkennung maskiert. E-Mail, Telefon, IBAN, Karten-, Steuer-, Adress- und weitere
-Muster werden erkannt. Die Erkennung ist eine Hilfestellung und keine vollständige
-DSGVO-Anonymisierung. Hochsensible Freitexte sollten vor Upload entfernt werden.
+- Logs enthalten keine Rohdaten, Dateinamen, E-Mail-Adressen, Prompts, Tokens oder
+  Provider-Antworttexte. Steuerzeichen und Zeilenumbrueche werden neutralisiert.
+- Unerwartete UI-Fehler zeigen nur eine zufaellige Korrelations-ID.
+- `.env`, Schluessel und lokale Datenbanken sind nicht versioniert. CI prueft
+  Quelltexte auf typische reale Google-, Stripe-, Webhook-, PostgreSQL- und
+  Private-Key-Muster, ohne gefundene Werte auszugeben.
+- Der Billing-Service setzt CSP, Frame-Schutz, `nosniff`, `no-store`, Referrer- und
+  Permissions-Policy. HSTS und die finalen Streamlit-/OIDC-Cookie-Attribute muessen
+  an der echten HTTPS-Domain bzw. am Reverse Proxy geprueft werden.
 
-Gemini-Anfragen enthalten aggregierte Beträge, Margen, Zeitvergleiche, Datenqualitätswerte
-und maskierte/gekürzte Kategorienamen. Welche Aufbewahrung für die konfigurierte Google-
-Organisation gilt, muss vor Beta-Start anhand Vertrag, Region und Google-Einstellungen
-geprüft und in der Datenschutzerklärung genannt werden.
+## Bekannte Restrisiken
 
-## Technische Verarbeitungsübersicht
-
-| Datenart | Zweck | Speicherort | Technische Dauer | Empfänger |
-|---|---|---|---|---|
-| Google-Konto-E-Mail und OIDC-Claims | Login und Allowlist | Streamlit-Identitätssitzung | bis Logout oder Ablauf des Identity-Cookies | Render, Google OIDC |
-| CSV/XLSX-Upload | Analyse | RAM der einzelnen Streamlit-Session | bis Logout, Sessionende, Prozessneustart oder Ablauf der Sitzung | Render |
-| Bereinigte Daten und Filterzustand | Dashboard und PDF | RAM der einzelnen Streamlit-Session | wie Upload | Render |
-| PDF-Bytes | Download | RAM der einzelnen Streamlit-Session | bis Logout, Kontextwechsel oder Sessionende | Render |
-| Aggregierte Kennzahlen und maskierte Kategorien | KI-Interpretation | ausgehende Gemini-Anfrage | nach Google-Vertrag und Projekteinstellungen zu klären | Google Gemini |
-| Ereignistyp, Korrelations-ID, anonymisierte Nutzer-ID, Mengen und Laufzeiten | Betrieb und Fehleranalyse | Render-Logs | nach Render-Konfiguration zu klären | Render |
-| OIDC-Identität, E-Mail, Stripe Customer-/Subscription-ID und Abo-Status | optionales Billing und Berechtigung | PostgreSQL, nur bei aktiviertem Billing | bis administrative Kontolöschung und Ablauf gesetzlicher Aufbewahrungspflichten | Render/DB-Anbieter, Stripe |
-
-Im aktuellen Beta-Deployment ist Billing deaktiviert und noch keine Billing-Datenbank
-angebunden. DataDeck besitzt keinen persistenten Upload-Speicher und kein automatisches
-Feedback-Attachment. Diese technische Übersicht ist eine Grundlage für die noch
-rechtlich zu prüfenden Texte und ersetzt keine Datenschutzerklärung oder AVV.
-
-## Logging und Fehler
-
-Logs enthalten Ereignistyp, zufällige Korrelations-ID, anonymisierte Nutzer-ID,
-Dataset-Hash-Präfix, Mengen, Laufzeiten und Exception-Klasse. Dateinamen, Rohdaten,
-Prompt-Inhalte, E-Mail-Adressen und API-Fehlertexte werden nicht protokolliert.
-Unerwartete UI-Fehler zeigen nur eine Korrelations-ID.
-
-## Secret-Status
-
-Der aktive Gemini-Produktionsschlüssel ist an ein eigenes Dienstkonto gebunden, auf die
-Gemini API beschränkt und ausschließlich als geschütztes Render-Secret hinterlegt. Der
-zuvor im Chat offengelegte Schlüssel stammt aus dem Google-Projekt `1067062801521`, auf
-das das aktuelle Konto keinen ausreichenden Zugriff besitzt. Er gilt bis zum Widerruf
-durch ein berechtigtes Konto weiterhin als kompromittiert und darf nicht verwendet werden.
-Schlüsselwerte werden weder in dieser Dokumentation noch in Logs oder Release-Artefakten
-gespeichert.
-
-## Bekannte Grenzen
-
-- Keine Malware-Engine; Upload-Schutz ist Struktur- und Ressourcenprüfung.
-- Rate Limits sind sessionlokal, nicht verteilt über mehrere Serverinstanzen.
-- Keine persistente Audit-Datenbank oder externe Monitoring-Plattform konfiguriert.
-- Security Header, TLS, Request-Limits und IP-Rate-Limits müssen am Hosting-Proxy gesetzt werden.
-- PII-Erkennung kann falsch-positive und falsch-negative Treffer liefern.
-- Mehrere Währungen werden erkannt und nicht zusammengerechnet; Wechselkursumrechnung existiert nicht.
-- Es gibt keinen CSV-/Excel-Export. Ein zukünftiger Tabellenexport muss Werte mit `=`, `+`, `-` oder `@` gegen Formula Injection neutralisieren.
-- OIDC muss mit dem endgültigen Provider und der endgültigen Domain separat end-to-end geprüft werden.
-- Eine einzelne Render-Instanz ist absichtlich vorgegeben; horizontale Skalierung ohne externen Session-State ist nicht freigegeben.
-
-Vor einer öffentlichen oder bezahlten Nutzung sind Penetrationstest, Datenschutzprüfung,
-Auftragsverarbeitungsverträge, Löschkonzept und Incident-Prozess erforderlich.
+- Kein Anwendungscode kann volumetrische DDoS-Angriffe allein abwehren. Vor einer
+  oeffentlichen Beta sind Edge-Rate-Limits, WAF, Request-Body-Limits und Alarmierung
+  beim Hosting-Provider erforderlich.
+- In-Memory-Limits werden bei Prozessneustart zurueckgesetzt und sind nicht zwischen
+  mehreren Instanzen geteilt.
+- Es gibt keine Malware-Engine, keinen persistenten Security-Audit-Stream und noch
+  keinen externen Penetrationstest.
+- PII-Erkennung kann falsch-positive und falsch-negative Ergebnisse liefern.
+- Der Feedback-Link ist extern; Missbrauchsschutz muss dort konfiguriert werden.
+- Vor bezahlter oder oeffentlicher Nutzung bleiben Datenschutzpruefung, AV-Vertraege,
+  Loeschkonzept, Backup-Restore-Test und Incident-Prozess erforderlich.

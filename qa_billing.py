@@ -10,7 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from billing.config import BillingConfig
-from billing.entitlements import entitlement_for
+from billing.entitlements import entitlement_for, premium_feature_access
 from billing.models import BillingUser, Identity, stable_user_id
 from billing.service import BillingService
 from billing_service import app
@@ -305,6 +305,10 @@ class BillingTests(unittest.TestCase):
         self.assertNotIn("billing_checkout_url", state)
         self.assertNotIn("billing_return_synced", state)
         self.assertEqual(state["theme"], "dark")
+
+    def test_17_enabled_billing_fails_closed_without_server_state(self):
+        self.assertTrue(premium_feature_access(billing_active=False, user=None))
+        self.assertFalse(premium_feature_access(billing_active=True, user=None))
 
 
 if __name__ == "__main__":

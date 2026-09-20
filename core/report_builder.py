@@ -306,4 +306,7 @@ def generate_pdf(
         report_version=max(1, int(report_version)),
         logo_data_uri=validated_logo_data_uri(logo_bytes),
     )
-    return HTML(string=html_content, url_fetcher=_blocking_url_fetcher).write_pdf()
+    pdf_bytes = HTML(string=html_content, url_fetcher=_blocking_url_fetcher).write_pdf()
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        raise ValueError("Der PDF-Report überschreitet das sichere Größenlimit")
+    return pdf_bytes

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import base64
+import io
 import re
+import warnings
+
+from PIL import Image, UnidentifiedImageError
 
 
 DEFAULT_ACCENT = "#4F46E5"
@@ -20,7 +24,12 @@ def validate_accent_color(value: str | None) -> str:
     return candidate
 
 
-def validated_logo_data_uri(content: bytes | None, max_bytes: int = 1_000_000) -> str | None:
+def validated_logo_data_uri(
+    content: bytes | None,
+    max_bytes: int = 1_000_000,
+    max_dimension: int = 4_096,
+    max_pixels: int = 10_000_000,
+) -> str | None:
     if not content:
         return None
     if len(content) > max_bytes:
@@ -31,7 +40,29 @@ def validated_logo_data_uri(content: bytes | None, max_bytes: int = 1_000_000) -
         mime = "image/jpeg"
     else:
         raise ValueError("Logo muss eine echte PNG- oder JPEG-Datei sein")
-    return f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(content)) as image:
+                width, height = image.size
+                if width < 1 or height < 1 or width > max_dimension or height > max_dimension:
+                    raise ValueError(f"Logo darf maximal {max_dimension} x {max_dimension} Pixel groß sein")
+                if width * height > max_pixels:
+                    raise ValueError("Logo überschreitet das sichere Pixellimit")
+                image.verify()
+            with Image.open(io.BytesIO(content)) as image:
+                image.load()
+                sanitized = image.convert("RGBA" if mime == "image/png" else "RGB")
+                output = io.BytesIO()
+                sanitized.save(
+                    output,
+                    format="PNG" if mime == "image/png" else "JPEG",
+                    optimize=True,
+                )
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as error:
+        raise ValueError("Logo ist beschädigt oder kein unterstütztes Bild") from error
+    safe_content = output.getvalue()
+    return f"data:{mime};base64,{base64.b64encode(safe_content).decode('ascii')}"
 
 
 def normalize_report_settings(settings: dict | None) -> dict:

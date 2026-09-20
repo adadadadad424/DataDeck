@@ -34,16 +34,24 @@ import io
 import os
 import re
 import csv
+import time
 import unicodedata
 import zipfile
 
 import numpy as np
 import pandas as pd
 
+from .security_controls import validate_upload_filename
+
 
 DEFAULT_MAX_COLUMNS = 250
 DEFAULT_MAX_XLSX_SHEETS = 50
 DEFAULT_MAX_XLSX_UNCOMPRESSED_MB = 250
+DEFAULT_MAX_UPLOAD_MB = 25
+DEFAULT_MAX_CSV_FIELD_CHARS = 100_000
+DEFAULT_MAX_SOURCE_ROWS = 250_000
+DEFAULT_MAX_XLSX_ENTRIES = 2_000
+DEFAULT_MAX_XLSX_XML_MB = 32
 MISSING_VALUE_TOKENS = frozenset({
     "", "null", "n/a", "na", "nan", "none", "-", "—", "k.a.", "k.a", "keine angabe",
 })
@@ -73,6 +81,21 @@ def _excel_column_number(reference: str) -> int:
     return result
 
 
+def _excel_row_number(reference: str) -> int:
+    digits = "".join(char for char in reference if char.isdigit())
+    return int(digits or 0)
+
+
+def _parse_deadline() -> float:
+    seconds = _positive_env_int("MAX_FILE_PARSE_SECONDS", 20, 120)
+    return time.monotonic() + seconds
+
+
+def _ensure_before_deadline(deadline: float) -> None:
+    if time.monotonic() > deadline:
+        raise ValueError("Die Dateiverarbeitung hat das sichere Zeitlimit überschritten.")
+
+
 def _validate_csv_content(file_content: bytes, max_columns: int) -> None:
     sample = file_content[:1_000_000]
     if b"\x00" in sample:
@@ -85,14 +108,14 @@ def _validate_csv_content(file_content: bytes, max_columns: int) -> None:
     text = None
     for encoding in ("utf-8-sig", "cp1252", "latin1"):
         try:
-            text = sample.decode(encoding)
+            text = file_content.decode(encoding)
             break
         except UnicodeDecodeError:
             continue
     if not text:
         raise ValueError("Die CSV-Datei konnte nicht als Text gelesen werden.")
 
-    detected = _detect_csv_header(text)
+    detected = _detect_csv_header(text[:1_000_000])
     delimiter = detected[1] if detected else None
     if delimiter is None:
         try:
@@ -100,9 +123,25 @@ def _validate_csv_content(file_content: bytes, max_columns: int) -> None:
         except csv.Error:
             delimiter = ","
     try:
-        widest = max((len(row) for row in list(csv.reader(io.StringIO(text), delimiter=delimiter))[:50]), default=0)
+        max_field_chars = _positive_env_int(
+            "MAX_CSV_FIELD_CHARS", DEFAULT_MAX_CSV_FIELD_CHARS, 1_000_000
+        )
+        max_source_rows = _positive_env_int(
+            "MAX_SOURCE_ROWS", DEFAULT_MAX_SOURCE_ROWS, 1_000_000
+        )
+        widest = 0
+        for row_count, row in enumerate(csv.reader(io.StringIO(text), delimiter=delimiter), start=1):
+            if row_count > max_source_rows + 1:
+                raise ValueError(
+                    f"Die CSV-Datei überschreitet das Sicherheitslimit von {max_source_rows:,} Zeilen."
+                )
+            widest = max(widest, len(row))
+            if any(len(field) > max_field_chars for field in row):
+                raise ValueError(
+                    f"Ein CSV-Feld überschreitet das Sicherheitslimit von {max_field_chars:,} Zeichen."
+                )
     except csv.Error as error:
-        raise ValueError("Die CSV-Struktur ist beschädigt oder unvollständig.") from error
+        raise ValueError("Die CSV-Struktur ist beschädigt oder enthält ein zu großes Feld.") from error
     if widest > max_columns:
         raise ValueError(f"Die Datei überschreitet das Spaltenlimit von {max_columns} Spalten.")
 
@@ -115,23 +154,39 @@ def _validate_xlsx_container(file_content: bytes, max_columns: int) -> None:
     max_uncompressed = _positive_env_int(
         "MAX_XLSX_UNCOMPRESSED_MB", DEFAULT_MAX_XLSX_UNCOMPRESSED_MB, 1000
     ) * 1024 * 1024
+    max_entries = _positive_env_int("MAX_XLSX_ENTRIES", DEFAULT_MAX_XLSX_ENTRIES, 10_000)
+    max_xml_size = _positive_env_int("MAX_XLSX_XML_MB", DEFAULT_MAX_XLSX_XML_MB, 128) * 1024 * 1024
+    max_source_rows = _positive_env_int("MAX_SOURCE_ROWS", DEFAULT_MAX_SOURCE_ROWS, 1_000_000)
     try:
         with zipfile.ZipFile(io.BytesIO(file_content)) as archive:
             entries = archive.infolist()
-            if len(entries) > 5_000:
+            if len(entries) > max_entries:
                 raise ValueError("Die XLSX-Datei enthält ungewöhnlich viele interne Dateien.")
             total_uncompressed = sum(entry.file_size for entry in entries)
             if total_uncompressed > max_uncompressed:
                 raise ValueError("Die entpackte XLSX-Datei überschreitet das Sicherheitslimit.")
             for entry in entries:
+                normalized_name = entry.filename.replace("\\", "/")
+                if (
+                    len(normalized_name) > 300
+                    or normalized_name.startswith("/")
+                    or "../" in normalized_name
+                ):
+                    raise ValueError("Die XLSX-Datei enthält einen unsicheren internen Pfad.")
+                if entry.filename.lower().endswith(".xml") and entry.file_size > max_xml_size:
+                    raise ValueError("Ein interner XLSX-XML-Bestandteil ist ungewöhnlich groß.")
                 if entry.file_size > 100 * 1024 * 1024:
                     raise ValueError("Ein interner XLSX-Bestandteil ist ungewöhnlich groß.")
-                if entry.file_size > 1_000_000 and entry.file_size > max(1, entry.compress_size) * 200:
+                if entry.file_size > 1_000_000 and entry.file_size > max(1, entry.compress_size) * 100:
                     raise ValueError("Die XLSX-Datei weist ein verdächtiges Kompressionsverhältnis auf.")
 
             names = [entry.filename.lower() for entry in entries]
-            if any("vbaproject.bin" in name or name.startswith("xl/externallinks/") for name in names):
-                raise ValueError("Makros oder externe Excel-Verknüpfungen werden nicht verarbeitet.")
+            forbidden_parts = (
+                "vbaproject.bin", "xl/externallinks/", "xl/embeddings/",
+                "xl/activex/", "customui/",
+            )
+            if any(any(part in name for part in forbidden_parts) for name in names):
+                raise ValueError("Makros, OLE-Objekte oder externe Excel-Verknüpfungen werden nicht verarbeitet.")
             sheet_entries = [entry for entry in entries if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", entry.filename.lower())]
             if len(sheet_entries) > max_sheets:
                 raise ValueError(f"Die XLSX-Datei überschreitet das Limit von {max_sheets} Tabellenblättern.")
@@ -139,8 +194,14 @@ def _validate_xlsx_container(file_content: bytes, max_columns: int) -> None:
                 with archive.open(entry) as stream:
                     prefix = stream.read(65_536).decode("utf-8", errors="ignore")
                 dimension = re.search(r'<dimension\s+ref="(?:[^:"]+:)?([A-Z]+\d+)"', prefix)
-                if dimension and _excel_column_number(dimension.group(1)) > max_columns:
-                    raise ValueError(f"Die Datei überschreitet das Spaltenlimit von {max_columns} Spalten.")
+                if dimension:
+                    last_cell = dimension.group(1)
+                    if _excel_column_number(last_cell) > max_columns:
+                        raise ValueError(f"Die Datei überschreitet das Spaltenlimit von {max_columns} Spalten.")
+                    if _excel_row_number(last_cell) > max_source_rows + 1:
+                        raise ValueError(
+                            f"Die XLSX-Datei überschreitet das Sicherheitslimit von {max_source_rows:,} Zeilen."
+                        )
     except zipfile.BadZipFile as error:
         raise ValueError("Der Dateiinhalt entspricht keiner gültigen XLSX-Datei.") from error
 
@@ -742,10 +803,18 @@ def _header_candidates(preview: pd.DataFrame, limit: int = 10) -> list[dict]:
 
 def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
     """Inspect sheets and likely header rows without persisting uploaded bytes."""
+    deadline = _parse_deadline()
     if not file_content:
         raise ValueError("Die hochgeladene Datei ist leer (0 Byte).")
-    name_lower = file_name.lower()
+    max_mb = _positive_env_int("MAX_UPLOAD_SIZE_MB", DEFAULT_MAX_UPLOAD_MB, 500)
+    if len(file_content) > max_mb * 1024 * 1024:
+        raise ValueError(f"Die Datei überschreitet das Systemlimit von {max_mb} MB.")
+    safe_name = validate_upload_filename(file_name, {".csv", ".xlsx"})
+    name_lower = safe_name.lower()
     if name_lower.endswith(".csv"):
+        max_columns = _positive_env_int("MAX_DATASET_COLUMNS", DEFAULT_MAX_COLUMNS, 2_000)
+        _validate_csv_content(file_content, max_columns)
+        _ensure_before_deadline(deadline)
         text, encoding = _decode_csv(file_content)
         detected = _detect_csv_header(text, max_scan_rows=10)
         delimiter = detected[1] if detected else None
@@ -755,6 +824,7 @@ def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
             except csv.Error:
                 delimiter = ","
         preview = _csv_preview_frame(text, delimiter)
+        _ensure_before_deadline(deadline)
         candidates = _header_candidates(preview)
         selected = detected[0] if detected else (candidates[0]["row"] if candidates else 0)
         confidence = "hoch" if candidates and candidates[0]["score"] >= 4 else "mittel" if candidates else "niedrig"
@@ -774,6 +844,7 @@ def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
 
     max_columns = _positive_env_int("MAX_DATASET_COLUMNS", DEFAULT_MAX_COLUMNS, 2_000)
     _validate_xlsx_container(file_content, max_columns)
+    _ensure_before_deadline(deadline)
     try:
         import openpyxl
 
@@ -782,6 +853,7 @@ def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
         )
         sheets = []
         for worksheet in workbook.worksheets:
+            _ensure_before_deadline(deadline)
             rows = list(worksheet.iter_rows(min_row=1, max_row=min(12, worksheet.max_row), values_only=True))
             width = max((len(row) for row in rows), default=0)
             padded = [list(row) + [None] * (width - len(row)) for row in rows]
@@ -799,6 +871,7 @@ def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
                 "preview": _row_preview(preview, limit=10),
             })
         workbook.close()
+        _ensure_before_deadline(deadline)
     except Exception as error:
         raise ValueError("Die XLSX-Struktur konnte nicht geprüft werden.") from error
     if not sheets:
@@ -897,7 +970,8 @@ def load_and_validate_file(
     eindeutig.
     """
 
-    max_mb = _positive_env_int("MAX_UPLOAD_SIZE_MB", 50, 500)
+    deadline = _parse_deadline()
+    max_mb = _positive_env_int("MAX_UPLOAD_SIZE_MB", DEFAULT_MAX_UPLOAD_MB, 500)
     max_columns = _positive_env_int("MAX_DATASET_COLUMNS", DEFAULT_MAX_COLUMNS, 2_000)
 
     if not file_content:
@@ -909,14 +983,17 @@ def load_and_validate_file(
         )
 
     max_rows = 100_000 if is_premium else 1_000
-    name_lower = file_name.lower()
+    safe_name = validate_upload_filename(file_name, {".csv", ".xlsx"})
+    name_lower = safe_name.lower()
 
     if name_lower.endswith('.csv'):
         _validate_csv_content(file_content, max_columns)
+        _ensure_before_deadline(deadline)
         df = _read_csv_robust(file_content, nrows=max_rows + 1, header_row=header_row)
 
     elif name_lower.endswith('.xlsx'):
         _validate_xlsx_container(file_content, max_columns)
+        _ensure_before_deadline(deadline)
         try:
             excel_file = pd.ExcelFile(
                 io.BytesIO(file_content),
@@ -931,6 +1008,7 @@ def load_and_validate_file(
             if sheet_name is not None and sheet_name not in excel_file.sheet_names:
                 raise ValueError(f"Das Tabellenblatt '{sheet_name}' existiert nicht.")
             for current_sheet in selected_sheets:
+                _ensure_before_deadline(deadline)
                 try:
                     candidate = pd.read_excel(
                         excel_file,
@@ -938,6 +1016,7 @@ def load_and_validate_file(
                         header=0 if header_row is None else header_row,
                         nrows=max_rows + 1,
                     )
+                    _ensure_before_deadline(deadline)
                 except Exception as sheet_error:
                     if first_error is None:
                         first_error = sheet_error
@@ -991,6 +1070,7 @@ def load_and_validate_file(
         )
 
     df = normalize_dataframe_structure(df)
+    _ensure_before_deadline(deadline)
     if df.empty or len(df.columns) == 0:
         raise ValueError(
             "Die hochgeladene Datei enthält keine Datenzeilen."

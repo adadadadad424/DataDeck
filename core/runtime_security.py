@@ -9,7 +9,7 @@ import uuid
 from collections.abc import MutableMapping
 
 
-APP_VERSION = "0.9.0-beta"
+APP_VERSION = "0.9.1-beta"
 VALID_ENVIRONMENTS = {"development", "testing", "production"}
 SENSITIVE_SESSION_KEYS = {
     "raw_df",
@@ -59,6 +59,7 @@ SENSITIVE_SESSION_KEYS = {
     "consulting_cache_version",
     "saved_analysis_id",
     "saved_analysis_client_id",
+    "security_session_id",
 }
 
 
@@ -72,6 +73,15 @@ def auth_required() -> bool:
     if configured is None:
         return app_environment() == "production"
     return configured.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def oidc_claims_expired(claims: dict, *, now: int | None = None) -> bool:
+    """Treat missing, malformed, or elapsed expiry claims as expired."""
+    current = int(time.time()) if now is None else int(now)
+    try:
+        return int(claims.get("exp", 0)) <= current
+    except (AttributeError, TypeError, ValueError):
+        return True
 
 
 def approved_users() -> set[str]:

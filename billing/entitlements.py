@@ -29,3 +29,9 @@ def entitlement_for(user: BillingUser, now: dt.datetime | None = None) -> Entitl
         return Entitlement(True, True, "pro", "active_subscription")
     return Entitlement(False, False, "free", "no_entitlement")
 
+
+def premium_feature_access(*, billing_active: bool, user: BillingUser | None) -> bool:
+    """Keep the closed beta open, but fail closed when enabled billing is unavailable."""
+    if not billing_active:
+        return True
+    return bool(user is not None and entitlement_for(user).has_access)

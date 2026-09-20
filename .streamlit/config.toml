@@ -2,7 +2,8 @@
 base = "light"
 
 [server]
-maxUploadSize = 50
+maxUploadSize = 25
+maxMessageSize = 25
 enableXsrfProtection = true
 enableCORS = true
 headless = true

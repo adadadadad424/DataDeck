@@ -29,7 +29,10 @@ def aggregate_result(kpis: dict) -> dict:
     segments = []
     category_frame = kpis.get("kategorien_daten")
     if isinstance(category_frame, pd.DataFrame):
-        for row in category_frame.to_dict("records"):
+        ranked_categories = category_frame.sort_values(
+            "Umsatz_Clean", ascending=False, na_position="last"
+        ).head(500)
+        for row in ranked_categories.to_dict("records"):
             segments.append({
                 "category": _json_value(row.get("Kategorie_Clean")),
                 "revenue": _json_value(row.get("Umsatz_Clean")),
@@ -58,5 +61,8 @@ def aggregate_result(kpis: dict) -> dict:
         "profit_available": bool(kpis.get("profit_available")),
         "financial_aggregation_available": bool(kpis.get("financial_aggregation_available", True)),
         "segments": segments,
+        "segments_truncated": bool(
+            isinstance(category_frame, pd.DataFrame) and len(category_frame) > len(segments)
+        ),
         "time_series": time_series,
     }

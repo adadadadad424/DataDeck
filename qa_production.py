@@ -78,7 +78,9 @@ class ProductionTests(unittest.TestCase):
 
     def test_production_ui_uses_server_side_entitlement(self):
         source = Path("main.py").read_text(encoding="utf-8")
-        self.assertIn("entitlement_for(billing_user).has_access", source)
+        self.assertIn("premium_feature_access(", source)
+        self.assertIn("billing_active=billing_active", source)
+        self.assertIn("user=billing_user", source)
         self.assertIn("if is_production:", source)
 
     def test_closed_beta_has_honest_public_placeholder_pages(self):

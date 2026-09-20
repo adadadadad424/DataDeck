@@ -7,7 +7,8 @@ from collections.abc import Callable
 from typing import Any
 
 import psycopg
-from psycopg.rows import dict_row
+
+from core.database import connect_postgres
 
 from .models import BillingUser, Identity
 
@@ -21,7 +22,7 @@ class PostgresBillingStore:
         self.database_url = database_url
 
     def _connect(self):
-        return psycopg.connect(self.database_url, row_factory=dict_row)
+        return connect_postgres(self.database_url)
 
     def upsert_identity(self, identity: Identity) -> BillingUser:
         query = """

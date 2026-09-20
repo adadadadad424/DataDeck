@@ -35,6 +35,8 @@ Mandanten-Isolation und das deaktivierte Stripe-Testbilling.
 - `core/analysis.py`: zentrale KPI- und Zeitvergleichslogik
 - `core/formatting.py`: deutsche Zahlen-, Kurz- und Datumsformatierung
 - `core/security.py`: PII-Erkennung, Maskierung und Prompt-Bereinigung
+- `core/security_controls.py`: zentrale Rate-, Parallelitaets- und Lastgrenzen
+- `core/database.py`: begrenzte PostgreSQL-Verbindungen und Abfragen
 - `core/ai_insights.py`: Gemini-Aufruf und lokaler Fallback
 - `core/report_builder.py`: PDF aus den zentral berechneten Kennzahlen
 - `core/runtime_security.py`: Produktionsschutz, Allowlist, Session-Cleanup
@@ -61,6 +63,8 @@ Details zu Datenschutz, Isolation und Betrieb stehen in
 `CONSULTING_HISTORY.md`.
 
 Produktionsbetrieb, Sicherheitsgrenzen und der Beta-Ablauf sind in
-`DEPLOYMENT.md`, `PRODUCTION_RUNBOOK.md`, `SECURITY_NOTES.md` und
-`BETA_LAUNCH_CHECKLIST.md` beschrieben. Die noch deaktivierte Stripe-Testintegration
-und ihre manuellen Einrichtungsschritte stehen in `BILLING.md`.
+`DEPLOYMENT.md`, `PRODUCTION_RUNBOOK.md`, `THREAT_MODEL.md`,
+`SECURITY_NOTES.md`, `SECURITY_GO_LIVE_CHECKLIST.md` und
+`BETA_LAUNCH_CHECKLIST.md` beschrieben. Die noch deaktivierte
+Stripe-Testintegration und ihre manuellen Einrichtungsschritte stehen in
+`BILLING.md`.

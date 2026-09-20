@@ -5,9 +5,11 @@ import sys
 
 
 QA_SUITES = (
+    "qa_secret_scan.py",
     "qa_test_final.py",
     "qa_ui_quality.py",
     "qa_beta_security.py",
+    "qa_security_hardening.py",
     "qa_production.py",
     "qa_golden_datasets.py",
     "qa_import_pipeline.py",

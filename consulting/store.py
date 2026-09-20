@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 
-import psycopg
-from psycopg.rows import dict_row
+from core.database import connect_postgres
 
+from .authorization import require_analysis_access, require_client_access
 from .models import AnalysisSnapshot, Client, ReportMetadata
 
 
@@ -27,31 +28,51 @@ def _report(row) -> ReportMetadata | None:
     return ReportMetadata(**row) if row else None
 
 
+def _json_payload(value, label: str, max_bytes: int) -> str:
+    payload = json.dumps(value, ensure_ascii=False)
+    if len(payload.encode("utf-8")) > max_bytes:
+        raise ValueError(f"{label} überschreitet das Speicherlimit")
+    return payload
+
+
 class PostgresConsultingStore:
     def __init__(self, database_url: str):
         self.database_url = database_url
 
     def _connect(self):
-        return psycopg.connect(self.database_url, row_factory=dict_row)
+        return connect_postgres(self.database_url)
+
+    @staticmethod
+    def _list_limit() -> int:
+        try:
+            value = int(os.getenv("MAX_HISTORY_ITEMS", "200"))
+        except ValueError:
+            value = 200
+        return max(10, min(value, 1_000))
 
     def create_client(self, owner_user_id: str, name: str, internal_reference: str | None = None) -> Client:
+        if not owner_user_id:
+            raise PermissionError("Anmeldung erforderlich")
         clean_name = name.strip()
         if not clean_name or len(clean_name) > 160:
             raise ValueError("Mandantenname muss zwischen 1 und 160 Zeichen lang sein")
+        clean_reference = (internal_reference or "").strip() or None
+        if clean_reference and len(clean_reference) > 120:
+            raise ValueError("Interne Referenz darf maximal 120 Zeichen lang sein")
         client_id = str(uuid.uuid4())
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """INSERT INTO consulting_clients (client_id, owner_user_id, name, internal_reference)
                    VALUES (%s, %s, %s, %s) RETURNING *""",
-                (client_id, owner_user_id, clean_name, (internal_reference or "").strip() or None),
+                (client_id, owner_user_id, clean_name, clean_reference),
             )
             return _client(cursor.fetchone())  # type: ignore[return-value]
 
     def list_clients(self, owner_user_id: str) -> list[Client]:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT * FROM consulting_clients WHERE owner_user_id = %s ORDER BY name",
-                (owner_user_id,),
+                "SELECT * FROM consulting_clients WHERE owner_user_id = %s ORDER BY name LIMIT %s",
+                (owner_user_id, self._list_limit()),
             )
             return [_client(row) for row in cursor.fetchall()]  # type: ignore[misc]
 
@@ -72,8 +93,12 @@ class PostgresConsultingStore:
             return cursor.rowcount == 1
 
     def save_analysis(self, snapshot: AnalysisSnapshot) -> AnalysisSnapshot:
-        if self.get_client(snapshot.owner_user_id, snapshot.client_id) is None:
-            raise PermissionError("Mandant gehört nicht zu diesem Nutzer")
+        require_client_access(self, snapshot.owner_user_id, snapshot.client_id)
+        mapping_json = _json_payload(snapshot.mapping, "Spaltenzuordnung", 32_000)
+        result_json = _json_payload(snapshot.result, "Analyseergebnis", 512_000)
+        insights_json = _json_payload(snapshot.insights, "Insights", 32_000)
+        if len(snapshot.executive_summary) > 2_000 or len(snapshot.consultant_comment) > 2_000:
+            raise ValueError("Berichtstext überschreitet das Speicherlimit")
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """INSERT INTO analysis_snapshots (
@@ -85,8 +110,8 @@ class PostgresConsultingStore:
                 (
                     snapshot.analysis_id, snapshot.owner_user_id, snapshot.client_id,
                     snapshot.dataset_hash, snapshot.period_start, snapshot.period_end,
-                    json.dumps(snapshot.mapping), json.dumps(snapshot.result), snapshot.quality_status,
-                    json.dumps(snapshot.insights), snapshot.executive_summary,
+                    mapping_json, result_json, snapshot.quality_status,
+                    insights_json, snapshot.executive_summary,
                     snapshot.consultant_comment, snapshot.analysis_version, snapshot.uploaded_at,
                 ),
             )
@@ -96,8 +121,8 @@ class PostgresConsultingStore:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """SELECT * FROM analysis_snapshots
-                   WHERE owner_user_id = %s AND client_id = %s ORDER BY period_start DESC""",
-                (owner_user_id, client_id),
+                   WHERE owner_user_id = %s AND client_id = %s ORDER BY period_start DESC LIMIT %s""",
+                (owner_user_id, client_id, self._list_limit()),
             )
             return [_snapshot(row) for row in cursor.fetchall()]  # type: ignore[misc]
 
@@ -113,9 +138,10 @@ class PostgresConsultingStore:
         self, owner_user_id: str, client_id: str, analysis_id: str,
         settings: dict, report_hash: str | None,
     ) -> ReportMetadata:
-        analysis = self.get_analysis(owner_user_id, analysis_id)
-        if analysis is None or analysis.client_id != client_id:
+        analysis = require_analysis_access(self, owner_user_id, analysis_id)
+        if analysis.client_id != client_id:
             raise PermissionError("Analyse gehört nicht zu diesem Nutzer")
+        settings_json = _json_payload(settings, "Report-Einstellungen", 16_000)
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """SELECT COALESCE(MAX(report_version), 0) + 1 AS next_version
@@ -127,13 +153,13 @@ class PostgresConsultingStore:
                 """INSERT INTO report_versions (
                        report_id, owner_user_id, client_id, analysis_id, report_version, settings, report_hash
                    ) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s) RETURNING *""",
-                (str(uuid.uuid4()), owner_user_id, client_id, analysis_id, version, json.dumps(settings), report_hash),
+                (str(uuid.uuid4()), owner_user_id, client_id, analysis_id, version, settings_json, report_hash),
             )
             return _report(cursor.fetchone())  # type: ignore[return-value]
 
     def next_report_version(self, owner_user_id: str, client_id: str, analysis_id: str) -> int:
-        analysis = self.get_analysis(owner_user_id, analysis_id)
-        if analysis is None or analysis.client_id != client_id:
+        analysis = require_analysis_access(self, owner_user_id, analysis_id)
+        if analysis.client_id != client_id:
             raise PermissionError("Analyse gehört nicht zu diesem Nutzer")
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -161,15 +187,23 @@ class InMemoryConsultingStore:
         self.reports: dict[str, ReportMetadata] = {}
 
     def create_client(self, owner_user_id: str, name: str, internal_reference: str | None = None) -> Client:
+        if not owner_user_id:
+            raise PermissionError("Anmeldung erforderlich")
         clean_name = name.strip()
         if not clean_name or len(clean_name) > 160:
             raise ValueError("Mandantenname muss zwischen 1 und 160 Zeichen lang sein")
-        client = Client(str(uuid.uuid4()), owner_user_id, clean_name, internal_reference)
+        clean_reference = (internal_reference or "").strip() or None
+        if clean_reference and len(clean_reference) > 120:
+            raise ValueError("Interne Referenz darf maximal 120 Zeichen lang sein")
+        client = Client(str(uuid.uuid4()), owner_user_id, clean_name, clean_reference)
         self.clients[client.client_id] = client
         return client
 
     def list_clients(self, owner_user_id: str) -> list[Client]:
-        return sorted((item for item in self.clients.values() if item.owner_user_id == owner_user_id), key=lambda item: item.name)
+        return sorted(
+            (item for item in self.clients.values() if item.owner_user_id == owner_user_id),
+            key=lambda item: item.name,
+        )[:200]
 
     def get_client(self, owner_user_id: str, client_id: str) -> Client | None:
         client = self.clients.get(client_id)
@@ -184,8 +218,12 @@ class InMemoryConsultingStore:
         return True
 
     def save_analysis(self, snapshot: AnalysisSnapshot) -> AnalysisSnapshot:
-        if self.get_client(snapshot.owner_user_id, snapshot.client_id) is None:
-            raise PermissionError("Mandant gehört nicht zu diesem Nutzer")
+        require_client_access(self, snapshot.owner_user_id, snapshot.client_id)
+        _json_payload(snapshot.mapping, "Spaltenzuordnung", 32_000)
+        _json_payload(snapshot.result, "Analyseergebnis", 512_000)
+        _json_payload(snapshot.insights, "Insights", 32_000)
+        if len(snapshot.executive_summary) > 2_000 or len(snapshot.consultant_comment) > 2_000:
+            raise ValueError("Berichtstext überschreitet das Speicherlimit")
         if any(
             item.owner_user_id == snapshot.owner_user_id
             and item.client_id == snapshot.client_id
@@ -201,7 +239,7 @@ class InMemoryConsultingStore:
             (item for item in self.analyses.values() if item.owner_user_id == owner_user_id and item.client_id == client_id),
             key=lambda item: item.period_start,
             reverse=True,
-        )
+        )[:200]
 
     def get_analysis(self, owner_user_id: str, analysis_id: str) -> AnalysisSnapshot | None:
         snapshot = self.analyses.get(analysis_id)
@@ -211,8 +249,8 @@ class InMemoryConsultingStore:
         self, owner_user_id: str, client_id: str, analysis_id: str,
         settings: dict, report_hash: str | None,
     ) -> ReportMetadata:
-        analysis = self.get_analysis(owner_user_id, analysis_id)
-        if analysis is None or analysis.client_id != client_id:
+        analysis = require_analysis_access(self, owner_user_id, analysis_id)
+        if analysis.client_id != client_id:
             raise PermissionError("Analyse gehört nicht zu diesem Nutzer")
         version = 1 + max(
             (item.report_version for item in self.reports.values() if item.owner_user_id == owner_user_id and item.analysis_id == analysis_id),
@@ -229,8 +267,8 @@ class InMemoryConsultingStore:
         return report if report and report.owner_user_id == owner_user_id else None
 
     def next_report_version(self, owner_user_id: str, client_id: str, analysis_id: str) -> int:
-        analysis = self.get_analysis(owner_user_id, analysis_id)
-        if analysis is None or analysis.client_id != client_id:
+        analysis = require_analysis_access(self, owner_user_id, analysis_id)
+        if analysis.client_id != client_id:
             raise PermissionError("Analyse gehört nicht zu diesem Nutzer")
         return 1 + max(
             (

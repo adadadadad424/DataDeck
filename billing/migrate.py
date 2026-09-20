@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import psycopg
+from core.database import connect_postgres
 
 
 MIGRATIONS_DIR = Path(__file__).with_name("migrations")
@@ -13,7 +13,7 @@ MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 
 def apply_migrations(database_url: str) -> list[str]:
     applied: list[str] = []
-    with psycopg.connect(database_url) as connection:
+    with connect_postgres(database_url, migration=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("

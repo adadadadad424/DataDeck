@@ -26,6 +26,24 @@ services:
         value: "25"
       - key: MAX_XLSX_UNCOMPRESSED_MB
         value: "100"
+      - key: MAX_XLSX_ENTRIES
+        value: "2000"
+      - key: MAX_XLSX_XML_MB
+        value: "32"
+      - key: MAX_SOURCE_ROWS
+        value: "250000"
+      - key: MAX_CSV_FIELD_CHARS
+        value: "100000"
+      - key: MAX_FILE_PARSE_SECONDS
+        value: "20"
+      - key: DB_CONNECT_TIMEOUT_SECONDS
+        value: "5"
+      - key: DB_STATEMENT_TIMEOUT_MS
+        value: "5000"
+      - key: GEMINI_CIRCUIT_FAILURES
+        value: "3"
+      - key: GEMINI_CIRCUIT_COOLDOWN_SECONDS
+        value: "60"
       - key: OIDC_SERVER_METADATA_URL
         value: https://accounts.google.com/.well-known/openid-configuration
       - key: OIDC_COOKIE_SECRET

@@ -35,6 +35,14 @@ import html
 import pandas as pd
 
 
+MAX_SECURITY_TEXT_CHARS = 2_000
+_PROMPT_DIRECTIVE_RE = re.compile(
+    r"(?i)\b(?:ignore\s+(?:all\s+)?previous\s+instructions?|"
+    r"reveal\s+(?:the\s+)?secrets?|system\s+prompt|developer\s+message|"
+    r"act\s+as\s+|do\s+not\s+follow)\b"
+)
+
+
 def _luhn_valid(digits: str) -> bool:
     """Validiert eine Ziffernfolge per Luhn-Algorithmus (Standard-Prüfsumme
     für Kreditkartennummern). Reduziert False Positives bei zufälligen
@@ -128,6 +136,7 @@ def detect_pii_types(text: str) -> set[str]:
     wenn typische Labels davorstehen, um False Positives zu senken."""
     if not isinstance(text, str):
         text = str(text)
+    text = text[:MAX_SECURITY_TEXT_CHARS]
 
     types: set[str] = set()
 
@@ -177,6 +186,7 @@ def mask_pii(text: str) -> str:
     """
     if not isinstance(text, str):
         text = str(text)
+    text = text[:MAX_SECURITY_TEXT_CHARS]
 
     def _iban_replacer(match: re.Match) -> str:
         return '[IBAN MASKIERT]' if _iban_checksum_valid(match.group(0)) else match.group(0)
@@ -216,6 +226,7 @@ def sanitize_for_prompt(text: str) -> str:
     text = mask_pii(text)
     text = re.sub(r'[\r\n\t]+', ' ', text)
     text = re.sub(r'--+', ' ', text)
+    text = _PROMPT_DIRECTIVE_RE.sub('[DATENANWEISUNG ENTFERNT]', text)
     text = re.sub(r'[{}\[\]<>\'"`;]', '', text)
     return text.strip()[:50]
 
@@ -227,7 +238,12 @@ def escape_html(text) -> str:
     return html.escape(str(text))
 
 
-def scan_dataframe_for_pii(df, max_cell_len: int = 500) -> dict:
+def scan_dataframe_for_pii(
+    df,
+    max_cell_len: int = 500,
+    max_values_per_column: int = 10_000,
+    max_total_cells: int = 50_000,
+) -> dict:
     """
     Rein informativer Scan über alle Text-Spalten eines DataFrames (zeigt
     dem Nutzer transparent, ob/wie viele E-Mail-/Telefon-artige Muster in
@@ -245,8 +261,13 @@ def scan_dataframe_for_pii(df, max_cell_len: int = 500) -> dict:
     treffer_gesamt = 0
     spalten_mit_treffern = []
     typen_gesamt: dict[str, int] = {}
+    scanned_cells = 0
+    sampled = False
 
     for spalte in df.columns:
+        if scanned_cells >= max_total_cells:
+            sampled = True
+            break
         # BUGFIX (QA-Fund, verifiziert gegen pandas 3.0.2): `dtype != object`
         # erkennt String-Spalten NICHT zuverlaessig. pandas 3.0 gibt reinen
         # Text-Spalten standardmaessig dtype 'str' (StringDtype), nicht mehr
@@ -258,12 +279,18 @@ def scan_dataframe_for_pii(df, max_cell_len: int = 500) -> dict:
         if not pd.api.types.is_string_dtype(df[spalte]):
             continue
 
-        werte = df[spalte].dropna().astype(str)
+        all_values = df[spalte].dropna().astype(str)
+        remaining = max_total_cells - scanned_cells
+        limit = min(max_values_per_column, remaining)
+        werte = all_values.head(limit)
+        if len(all_values) > len(werte):
+            sampled = True
         if werte.empty:
             continue
 
         spalten_treffer = 0
         for wert in werte:
+            scanned_cells += 1
             zelle = wert[:max_cell_len]
             pii_types = detect_pii_types(zelle)
             if pii_types:
@@ -280,4 +307,6 @@ def scan_dataframe_for_pii(df, max_cell_len: int = 500) -> dict:
         "spalten_mit_treffern": spalten_mit_treffern,
         "typen": sorted(typen_gesamt),
         "typen_anzahl": typen_gesamt,
+        "scanned_cells": scanned_cells,
+        "sampled": sampled,
     }

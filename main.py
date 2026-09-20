@@ -35,7 +35,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from billing.config import BillingConfig, billing_enabled
-from billing.entitlements import entitlement_for
+from billing.entitlements import entitlement_for, premium_feature_access
 from billing.models import Identity, stable_user_id
 from billing.service import BillingService
 from consulting.analysis import compare_snapshots, detect_trends, find_best_comparison
@@ -59,7 +59,14 @@ from core.data_processing import (
 )
 from core.formatting import format_compact_number, format_de_date, format_de_number
 from core.report_builder import generate_pdf
+from core.report_config import validated_logo_data_uri
 from core.security import escape_html, mask_pii, scan_dataframe_for_pii
+from core.security_controls import (
+    SecurityLimitError,
+    enforce_rate_limit,
+    guarded_operation,
+    sanitize_log_value,
+)
 from core.theme import DEFAULT_THEME, get_theme, inject_theme_css, plotly_layout_colors
 from core.runtime_security import (
     APP_VERSION,
@@ -71,6 +78,7 @@ from core.runtime_security import (
     dataset_hash,
     is_approved_user,
     new_correlation_id,
+    oidc_claims_expired,
     production_config_errors,
     safe_exception_name,
 )
@@ -159,6 +167,7 @@ def _init_session_state() -> None:
         "column_mapping": {},
         "correlation_id": new_correlation_id(),
         "user_id_hash": "local-dev",
+        "security_session_id": uuid.uuid4().hex,
         "ai_in_progress": False,
         "pdf_in_progress": False,
         "last_ai_started": None,
@@ -201,7 +210,10 @@ def _init_session_state() -> None:
 
 
 def _log_event(event: str, level: int = logging.INFO, **fields) -> None:
-    safe_fields = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    safe_fields = " ".join(
+        f"{sanitize_log_value(key, 40)}={sanitize_log_value(value)}"
+        for key, value in sorted(fields.items())
+    )
     logger.log(
         level,
         "%s correlation_id=%s user_id=%s%s",
@@ -210,6 +222,19 @@ def _log_event(event: str, level: int = logging.INFO, **fields) -> None:
         st.session_state.get("user_id_hash", "anonymous"),
         f" {safe_fields}" if safe_fields else "",
     )
+
+
+def _operation_guard(action: str):
+    return guarded_operation(
+        action,
+        st.session_state.get("user_id_hash", "anonymous"),
+        session_id=st.session_state.get("security_session_id"),
+    )
+
+
+def _show_security_limit(action: str, error: SecurityLimitError) -> None:
+    _log_event("RATE_LIMITED", logging.WARNING, action=action, retry_after=error.retry_after)
+    st.warning("Dieser Vorgang wurde zu häufig gestartet. Bitte warten Sie kurz und versuchen Sie es erneut.")
 
 
 def _show_unexpected_error(step: str) -> None:
@@ -289,8 +314,7 @@ def _auth_gate() -> dict | None:
     errors = production_config_errors()
     if errors:
         st.error("Die Produktionskonfiguration ist unvollständig. Der Zugriff bleibt gesperrt.")
-        for error in errors:
-            st.caption(error)
+        logger.error("PRODUCTION_CONFIG_REFUSED issue_count=%s", len(errors))
         return None
 
     if not auth_required():
@@ -312,24 +336,36 @@ def _auth_gate() -> dict | None:
         st.write("Melden Sie sich mit dem für die Beta freigegebenen Konto an.")
         if st.button("Sicher anmelden", type="primary", key="login_btn"):
             try:
+                enforce_rate_limit(
+                    "login",
+                    "anonymous",
+                    session_id=st.session_state.get("security_session_id"),
+                )
                 st.login()
+            except SecurityLimitError as error:
+                _show_security_limit("login", error)
             except Exception as error:
                 _log_event("AUTH_LOGIN_ERROR", logging.ERROR, error_type=safe_exception_name(error))
                 st.error("Die Anmeldung ist momentan nicht verfügbar. Bitte kontaktieren Sie den Beta-Support.")
         return None
 
     claims = dict(st.user)
-    try:
-        token_expired = int(claims.get("exp", 0)) <= int(time.time())
-    except (TypeError, ValueError):
-        token_expired = True
-    if token_expired:
+    if oidc_claims_expired(claims):
         clear_sensitive_session(st.session_state)
         st.warning("Ihre Anmeldung ist abgelaufen. Bitte melden Sie sich erneut an.")
         st.logout()
         return None
     email = claims.get("email") or claims.get("preferred_username")
     subject = claims.get("sub") or claims.get("oid")
+    authenticated_hash = anonymized_user_id(subject, email)
+    previous_hash = st.session_state.get("auth_audit_subject")
+    if previous_hash and previous_hash != authenticated_hash:
+        clear_sensitive_session(st.session_state)
+        _init_session_state()
+        st.session_state.security_session_id = uuid.uuid4().hex
+        st.session_state.correlation_id = new_correlation_id()
+        _log_event("SESSION_IDENTITY_CHANGED", logging.WARNING)
+    st.session_state.user_id_hash = authenticated_hash
     if claims.get("email_verified") is False or not is_approved_user(email):
         if not st.session_state.get("auth_denied_logged"):
             _log_event("LOGIN_DENIED", logging.WARNING)
@@ -340,7 +376,6 @@ def _auth_gate() -> dict | None:
             st.logout()
         return None
 
-    st.session_state.user_id_hash = anonymized_user_id(subject, email)
     if st.session_state.get("auth_audit_subject") != st.session_state.user_id_hash:
         _log_event("LOGIN_SUCCESS")
         st.session_state.auth_audit_subject = st.session_state.user_id_hash
@@ -470,7 +505,7 @@ def _data_preview_table(df: pd.DataFrame, max_rows: int = 100) -> str:
             elif isinstance(value, (pd.Timestamp, datetime.datetime, datetime.date)):
                 display_values.append(format_de_date(value))
             elif isinstance(value, str):
-                display_values.append(escape_html(mask_pii(value)))
+                display_values.append(escape_html(mask_pii(value[:500])))
             else:
                 display_values.append(escape_html(value))
         cells = "".join(f"<td>{value}</td>" for value in display_values)
@@ -750,11 +785,15 @@ def main() -> None:
                         new_client_name = st.text_input("Mandantenname", max_chars=160)
                         new_client_reference = st.text_input("Interne Referenz (optional)", max_chars=120)
                         if st.form_submit_button("Mandant speichern", width="stretch"):
-                            consulting_store.create_client(
-                                billing_identity.user_id, new_client_name, new_client_reference
-                            )
-                            st.session_state.consulting_cache_version += 1
-                            st.rerun()
+                            try:
+                                with _operation_guard("client_write"):
+                                    consulting_store.create_client(
+                                        billing_identity.user_id, new_client_name, new_client_reference
+                                    )
+                                st.session_state.consulting_cache_version += 1
+                                st.rerun()
+                            except SecurityLimitError as error:
+                                _show_security_limit("client_write", error)
                 if selected_client is not None:
                     with st.expander("Mandant verwalten", expanded=False):
                         st.caption("Beim Löschen werden Analysen und Report-Metadaten dieses Mandanten entfernt.")
@@ -766,17 +805,24 @@ def main() -> None:
                             "Mandant löschen", key="delete_client_btn",
                             disabled=not delete_confirmed, width="stretch",
                         ):
-                            consulting_store.delete_client(
-                                billing_identity.user_id, selected_client.client_id
-                            )
-                            st.session_state.consulting_cache_version += 1
-                            st.rerun()
+                            try:
+                                with _operation_guard("client_write"):
+                                    consulting_store.delete_client(
+                                        billing_identity.user_id, selected_client.client_id
+                                    )
+                                st.session_state.consulting_cache_version += 1
+                                st.rerun()
+                            except SecurityLimitError as error:
+                                _show_security_limit("client_write", error)
             except Exception as error:
                 _log_event("CONSULTING_STORE_UNAVAILABLE", logging.ERROR, error_type=safe_exception_name(error))
                 st.caption("Mandantenhistorie ist momentan nicht verfügbar.")
 
         if is_production:
-            is_premium = entitlement_for(billing_user).has_access if billing_user else True
+            is_premium = premium_feature_access(
+                billing_active=billing_active,
+                user=billing_user,
+            )
         else:
             is_premium = st.toggle(
                 "Demo: Premium-Funktionen", value=False, key="premium_toggle",
@@ -797,16 +843,22 @@ def main() -> None:
                 if access.has_active_pro:
                     try:
                         if st.button("Abo verwalten", key="billing_portal_btn", width="stretch"):
-                            st.session_state.billing_checkout_url = billing_service.create_portal_url(billing_identity)
+                            with _operation_guard("portal"):
+                                st.session_state.billing_checkout_url = billing_service.create_portal_url(billing_identity)
                             _log_event("PORTAL_CREATED")
+                    except SecurityLimitError as error:
+                        _show_security_limit("portal", error)
                     except Exception as error:
                         _log_event("PORTAL_ERROR", logging.ERROR, error_type=safe_exception_name(error))
                         st.error("Der Abrechnungsdienst ist momentan nicht erreichbar.")
                 else:
                     try:
                         if st.button("DataDeck Pro abonnieren", key="billing_checkout_btn", width="stretch"):
-                            st.session_state.billing_checkout_url = billing_service.create_checkout_url(billing_identity)
+                            with _operation_guard("checkout"):
+                                st.session_state.billing_checkout_url = billing_service.create_checkout_url(billing_identity)
                             _log_event("CHECKOUT_CREATED")
+                    except SecurityLimitError as error:
+                        _show_security_limit("checkout", error)
                     except Exception as error:
                         _log_event("CHECKOUT_ERROR", logging.ERROR, error_type=safe_exception_name(error))
                         st.error("Der Abrechnungsdienst ist momentan nicht erreichbar.")
@@ -878,7 +930,8 @@ def main() -> None:
             content_hash = dataset_hash(file_bytes)
             _log_event("UPLOAD_STARTED", bytes=len(file_bytes), dataset=content_hash[:12])
             try:
-                st.session_state.import_inspection = inspect_file_structure(file_bytes, uploaded_file.name)
+                with _operation_guard("upload"):
+                    st.session_state.import_inspection = inspect_file_structure(file_bytes, uploaded_file.name)
                 st.session_state.import_review_signature = signature
                 st.session_state.pending_upload_hash = content_hash
                 st.session_state.raw_df = None
@@ -889,6 +942,11 @@ def main() -> None:
                 st.session_state.dataset_fingerprint = None
                 st.session_state.column_mapping = {}
                 _reset_analysis_outputs()
+            except SecurityLimitError as error:
+                _show_security_limit("upload", error)
+                st.session_state.raw_df = None
+                _reset_data_caches()
+                return
             except ValueError as e:
                 st.error(f"Datei konnte nicht geprüft werden: {e}")
                 _log_event("UPLOAD_REJECTED", logging.WARNING, error_type=safe_exception_name(e))
@@ -959,13 +1017,14 @@ def main() -> None:
                 try:
                     file_bytes = uploaded_file.getvalue()
                     content_hash = st.session_state.pending_upload_hash or dataset_hash(file_bytes)
-                    df_loaded, was_truncated, max_rows = load_and_validate_file(
-                        file_bytes,
-                        uploaded_file.name,
-                        is_premium,
-                        sheet_name=None if inspection["kind"] == "csv" else selected_sheet,
-                        header_row=int(selected_header),
-                    )
+                    with _operation_guard("analysis"):
+                        df_loaded, was_truncated, max_rows = load_and_validate_file(
+                            file_bytes,
+                            uploaded_file.name,
+                            is_premium,
+                            sheet_name=None if inspection["kind"] == "csv" else selected_sheet,
+                            header_row=int(selected_header),
+                        )
                     _log_event(
                         "UPLOAD_SUCCESS", bytes=len(file_bytes), rows=len(df_loaded),
                         columns=len(df_loaded.columns), truncated=was_truncated,
@@ -978,6 +1037,8 @@ def main() -> None:
                     st.session_state.data_signature = f"{content_hash}_{is_premium}_{selected_sheet}_{selected_header}"
                     st.session_state.dataset_fingerprint = content_hash
                     st.rerun()
+                except SecurityLimitError as error:
+                    _show_security_limit("analysis", error)
                 except ValueError as error:
                     st.error(f"Datei konnte nicht verarbeitet werden: {error}")
                     _log_event("UPLOAD_REJECTED", logging.WARNING, error_type=safe_exception_name(error))
@@ -1032,8 +1093,13 @@ def main() -> None:
     data_key = st.session_state.data_signature or f"session-{id(df_raw)}"
 
     if st.session_state.pii_cache_key != data_key or st.session_state.pii_scan_cache is None:
-        st.session_state.pii_scan_cache = scan_dataframe_for_pii(df_raw)
-        st.session_state.pii_cache_key = data_key
+        try:
+            with _operation_guard("analysis"):
+                st.session_state.pii_scan_cache = scan_dataframe_for_pii(df_raw)
+            st.session_state.pii_cache_key = data_key
+        except SecurityLimitError as error:
+            _show_security_limit("analysis", error)
+            return
     pii_scan = st.session_state.pii_scan_cache
 
     effective_mapping = _effective_column_mapping()
@@ -1052,7 +1118,8 @@ def main() -> None:
     else:
         clean_started = time.perf_counter()
         try:
-            df_clean, warnings = clean_and_prepare_data(df_raw, effective_mapping)
+            with _operation_guard("analysis"):
+                df_clean, warnings = clean_and_prepare_data(df_raw, effective_mapping)
             new_revenue_only_mode = bool(warnings.get("revenue_only_mode"))
             revenue_mode_changed = st.session_state.revenue_only_mode != new_revenue_only_mode
             st.session_state.revenue_only_mode = new_revenue_only_mode
@@ -1071,6 +1138,9 @@ def main() -> None:
                 ),
                 duration_ms=round((time.perf_counter() - clean_started) * 1000),
             )
+        except SecurityLimitError as error:
+            _show_security_limit("analysis", error)
+            return
         except ValueError as e:
             st.error(f"Daten konnten nicht aufbereitet werden: {e}")
             _log_event("DATA_PREPARATION_REJECTED", logging.WARNING, error_type=safe_exception_name(e))
@@ -1156,6 +1226,11 @@ def main() -> None:
                 "Die Erkennung ist ein automatischer Hinweis und keine vollständige "
                 "DSGVO-Anonymisierung. Personenbezogene Muster werden in der Vorschau maskiert."
             )
+            if pii_scan.get("sampled"):
+                st.caption(
+                    f"Ressourcenschonende Stichprobe: {format_de_number(pii_scan.get('scanned_cells', 0), 0)} "
+                    "Textzellen wurden geprüft."
+                )
             st.caption("An Gemini werden ausschließlich aggregierte Kennzahlen übertragen, niemals Rohzeilen.")
 
     if data_quality["issues"]:
@@ -1212,7 +1287,12 @@ def main() -> None:
         kpis = st.session_state.kpi_cache
     else:
         analysis_started = time.perf_counter()
-        kpis = calculate_kpis(df_filtered, analysis_context)
+        try:
+            with _operation_guard("analysis"):
+                kpis = calculate_kpis(df_filtered, analysis_context)
+        except SecurityLimitError as error:
+            _show_security_limit("analysis", error)
+            return
         st.session_state.kpi_cache_key = kpi_key
         st.session_state.kpi_cache = kpis
         _log_event(
@@ -1387,56 +1467,61 @@ def main() -> None:
             and st.session_state.ai_insights_key == insight_key
             and st.session_state.ai_insights_source == "gemini"
         )
-        with st.spinner("Analysiere Unternehmensdaten …"):
-            if not gemini_configured:
-                st.session_state.ai_insights = generate_local_summary(kpis, effective_target)
-                st.session_state.ai_insights_source = "local"
-                st.session_state.ai_insights_key = insight_key
-                st.session_state.ai_insights_created_at = datetime.datetime.now()
-                st.success("Lokale KPI-Analyse erstellt.")
-                _log_event("AI_LOCAL_SUCCESS", duration_ms=round((time.perf_counter() - ai_started) * 1000))
-            else:
-                try:
-                    st.session_state.ai_insights = generate_ai_summary(kpis, effective_target, is_premium, niche)
-                    st.session_state.ai_insights_source = "gemini"
-                    st.session_state.ai_insights_key = insight_key
-                    st.session_state.ai_insights_created_at = datetime.datetime.now()
-                    st.session_state.pdf_bytes = None
-                    st.session_state.pdf_filename = None
-                    st.session_state.pdf_context_key = None
-                    st.success("Analyse abgeschlossen.")
-                    _log_event("AI_PROVIDER_SUCCESS", duration_ms=round((time.perf_counter() - ai_started) * 1000))
-                except (AIConfigError, AIRateLimitError, AIInsightError) as e:
-                    if not preserve_current_gemini:
+        try:
+            with _operation_guard("ai"):
+                with st.spinner("Analysiere Unternehmensdaten …"):
+                    if not gemini_configured:
                         st.session_state.ai_insights = generate_local_summary(kpis, effective_target)
                         st.session_state.ai_insights_source = "local"
                         st.session_state.ai_insights_key = insight_key
                         st.session_state.ai_insights_created_at = datetime.datetime.now()
-                    st.session_state.pdf_bytes = None
-                    st.session_state.pdf_filename = None
-                    st.session_state.pdf_context_key = None
-                    fallback_text = (
-                        "Die letzte erfolgreiche Gemini-Analyse bleibt sichtbar."
-                        if preserve_current_gemini else
-                        "DataDeck zeigt deshalb eine lokale KPI-Analyse."
-                    )
-                    st.warning(
-                        "KI-Analyse momentan nicht verfügbar. Die berechneten Kennzahlen "
-                        f"und der Bericht bleiben verfügbar. {fallback_text}"
-                    )
-                    _log_event("AI_PROVIDER_ERROR", logging.WARNING, error_type=safe_exception_name(e))
-                except Exception as e:
-                    if not preserve_current_gemini:
-                        st.session_state.ai_insights = generate_local_summary(kpis, effective_target)
-                        st.session_state.ai_insights_source = "local"
-                        st.session_state.ai_insights_key = insight_key
-                        st.session_state.ai_insights_created_at = datetime.datetime.now()
-                    st.warning(
-                        "Gemini war nicht verfügbar. "
-                        + ("Die letzte erfolgreiche Analyse bleibt sichtbar." if preserve_current_gemini else "DataDeck zeigt eine lokale KPI-Analyse.")
-                    )
-                    _log_event("AI_UNEXPECTED_ERROR", logging.ERROR, error_type=safe_exception_name(e))
-        st.session_state.ai_in_progress = False
+                        st.success("Lokale KPI-Analyse erstellt.")
+                        _log_event("AI_LOCAL_SUCCESS", duration_ms=round((time.perf_counter() - ai_started) * 1000))
+                    else:
+                        try:
+                            st.session_state.ai_insights = generate_ai_summary(kpis, effective_target, is_premium, niche)
+                            st.session_state.ai_insights_source = "gemini"
+                            st.session_state.ai_insights_key = insight_key
+                            st.session_state.ai_insights_created_at = datetime.datetime.now()
+                            st.session_state.pdf_bytes = None
+                            st.session_state.pdf_filename = None
+                            st.session_state.pdf_context_key = None
+                            st.success("Analyse abgeschlossen.")
+                            _log_event("AI_PROVIDER_SUCCESS", duration_ms=round((time.perf_counter() - ai_started) * 1000))
+                        except (AIConfigError, AIRateLimitError, AIInsightError) as e:
+                            if not preserve_current_gemini:
+                                st.session_state.ai_insights = generate_local_summary(kpis, effective_target)
+                                st.session_state.ai_insights_source = "local"
+                                st.session_state.ai_insights_key = insight_key
+                                st.session_state.ai_insights_created_at = datetime.datetime.now()
+                            st.session_state.pdf_bytes = None
+                            st.session_state.pdf_filename = None
+                            st.session_state.pdf_context_key = None
+                            fallback_text = (
+                                "Die letzte erfolgreiche Gemini-Analyse bleibt sichtbar."
+                                if preserve_current_gemini else
+                                "DataDeck zeigt deshalb eine lokale KPI-Analyse."
+                            )
+                            st.warning(
+                                "KI-Analyse momentan nicht verfügbar. Die berechneten Kennzahlen "
+                                f"und der Bericht bleiben verfügbar. {fallback_text}"
+                            )
+                            _log_event("AI_PROVIDER_ERROR", logging.WARNING, error_type=safe_exception_name(e))
+                        except Exception as e:
+                            if not preserve_current_gemini:
+                                st.session_state.ai_insights = generate_local_summary(kpis, effective_target)
+                                st.session_state.ai_insights_source = "local"
+                                st.session_state.ai_insights_key = insight_key
+                                st.session_state.ai_insights_created_at = datetime.datetime.now()
+                            st.warning(
+                                "Gemini war nicht verfügbar. "
+                                + ("Die letzte erfolgreiche Analyse bleibt sichtbar." if preserve_current_gemini else "DataDeck zeigt eine lokale KPI-Analyse.")
+                            )
+                            _log_event("AI_UNEXPECTED_ERROR", logging.ERROR, error_type=safe_exception_name(e))
+        except SecurityLimitError as error:
+            _show_security_limit("ai", error)
+        finally:
+            st.session_state.ai_in_progress = False
 
     if not gemini_configured and not st.session_state.ai_insights:
         st.info("Gemini ist nicht eingerichtet. DataDeck kann stattdessen eine lokale KPI-Analyse erstellen.")
@@ -1587,11 +1672,15 @@ def main() -> None:
                         consultant_comment=st.session_state.consultant_comment,
                         analysis_version=APP_VERSION,
                     )
-                    saved_snapshot = consulting_store.save_analysis(snapshot)
-                    st.session_state.saved_analysis_id = saved_snapshot.analysis_id
-                    st.session_state.saved_analysis_client_id = saved_snapshot.client_id
-                    st.session_state.consulting_cache_version += 1
-                    st.success("Analyse ohne Rohdatei in der Mandantenhistorie gespeichert.")
+                    try:
+                        with _operation_guard("client_write"):
+                            saved_snapshot = consulting_store.save_analysis(snapshot)
+                        st.session_state.saved_analysis_id = saved_snapshot.analysis_id
+                        st.session_state.saved_analysis_client_id = saved_snapshot.client_id
+                        st.session_state.consulting_cache_version += 1
+                        st.success("Analyse ohne Rohdatei in der Mandantenhistorie gespeichert.")
+                    except SecurityLimitError as error:
+                        _show_security_limit("client_write", error)
         except (ValueError, PermissionError) as error:
             st.warning(str(error))
         except Exception as error:
@@ -1614,12 +1703,12 @@ def main() -> None:
             with st.form("report_settings_form"):
                 rs1, rs2 = st.columns(2)
                 with rs1:
-                    company_name = st.text_input("Beratungsunternehmen", value=settings.get("company_name", ""))
-                    accent_color = st.text_input("Akzentfarbe (Hex)", value=settings.get("accent_color", "#4F46E5"))
-                    contact_name = st.text_input("Ansprechpartner", value=settings.get("contact_name", ""))
+                    company_name = st.text_input("Beratungsunternehmen", value=settings.get("company_name", ""), max_chars=160)
+                    accent_color = st.text_input("Akzentfarbe (Hex)", value=settings.get("accent_color", "#4F46E5"), max_chars=7)
+                    contact_name = st.text_input("Ansprechpartner", value=settings.get("contact_name", ""), max_chars=120)
                 with rs2:
-                    contact_email = st.text_input("Kontakt-E-Mail", value=settings.get("contact_email", ""))
-                    footer_text = st.text_input("Fußzeile", value=settings.get("footer_text", ""))
+                    contact_email = st.text_input("Kontakt-E-Mail", value=settings.get("contact_email", ""), max_chars=200)
+                    footer_text = st.text_input("Fußzeile", value=settings.get("footer_text", ""), max_chars=300)
                 show_summary = st.checkbox("Executive Summary", value=settings.get("show_summary", True))
                 show_ai_insights = st.checkbox("KI-Insights", value=settings.get("show_ai_insights", True))
                 show_kpis = st.checkbox("Kennzahlen", value=settings.get("show_kpis", True))
@@ -1644,10 +1733,14 @@ def main() -> None:
             if logo_file is not None:
                 logo_content = logo_file.getvalue()
                 if len(logo_content) <= 1_000_000:
-                    if st.session_state.report_logo_bytes != logo_content:
-                        st.session_state.report_logo_bytes = logo_content
-                        st.session_state.pdf_bytes = None
-                        st.session_state.pdf_context_key = None
+                    try:
+                        validated_logo_data_uri(logo_content)
+                        if st.session_state.report_logo_bytes != logo_content:
+                            st.session_state.report_logo_bytes = logo_content
+                            st.session_state.pdf_bytes = None
+                            st.session_state.pdf_context_key = None
+                    except ValueError as error:
+                        st.error(str(error))
                 else:
                     st.error("Logo darf maximal 1 MB groß sein.")
         pdf_clicked = st.button(
@@ -1686,19 +1779,20 @@ def main() -> None:
                             selected_client.client_id,
                             st.session_state.saved_analysis_id,
                         )
-                    st.session_state.pdf_bytes = generate_pdf(
-                        kpis,
-                        current_ai,
-                        niche,
-                        revenue_only=st.session_state.revenue_only_mode,
-                        data_quality=data_quality,
-                        report_settings=st.session_state.report_settings,
-                        consultant_comment=st.session_state.consultant_comment,
-                        report_version=report_version,
-                        logo_bytes=st.session_state.report_logo_bytes,
-                        client_name=selected_client.name if selected_client is not None else "",
-                        period_label=_report_period_label(kpis),
-                    )
+                    with _operation_guard("pdf"):
+                        st.session_state.pdf_bytes = generate_pdf(
+                            kpis,
+                            current_ai,
+                            niche,
+                            revenue_only=st.session_state.revenue_only_mode,
+                            data_quality=data_quality,
+                            report_settings=st.session_state.report_settings,
+                            consultant_comment=st.session_state.consultant_comment,
+                            report_version=report_version,
+                            logo_bytes=st.session_state.report_logo_bytes,
+                            client_name=selected_client.name if selected_client is not None else "",
+                            period_label=_report_period_label(kpis),
+                        )
                     st.session_state.pdf_filename = f"DataDeck_Analyse_{datetime.date.today():%Y-%m}.pdf"
                     st.session_state.pdf_context_key = report_context
                     if can_version_report:
@@ -1714,6 +1808,11 @@ def main() -> None:
                         "PDF_SUCCESS", bytes=len(st.session_state.pdf_bytes),
                         duration_ms=round((time.perf_counter() - pdf_started) * 1000),
                     )
+                except SecurityLimitError as error:
+                    st.session_state.pdf_bytes = None
+                    st.session_state.pdf_filename = None
+                    st.session_state.pdf_context_key = None
+                    _show_security_limit("pdf", error)
                 except Exception as e:
                     st.session_state.pdf_bytes = None
                     st.session_state.pdf_filename = None
