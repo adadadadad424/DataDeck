@@ -30,9 +30,9 @@ from typing import Optional
 from jinja2 import Environment, select_autoescape
 
 from .formatting import format_de_number
+from .report_config import normalize_report_settings, validated_logo_data_uri
 from .runtime_security import APP_VERSION
 
-BRAND = "#4F46E5"
 
 
 def _blocking_url_fetcher(url, *args, **kwargs):
@@ -119,11 +119,14 @@ TEMPLATE_HTML = """
 
     <div class="cover">
         <div class="cover-eyebrow">Data Intelligence</div>
-        <div class="cover-logo">Data<span>Deck</span></div>
+        {% if logo_data_uri %}<img src="{{ logo_data_uri }}" style="max-width:180px;max-height:64px;margin:8px 0 4px;">{% endif %}
+        <div class="cover-logo">{{ brand_name }}</div>
         <div class="cover-subtitle">Unternehmensanalyse &amp; Strategiebericht</div>
         <div class="cover-meta">
+            {% if client_name %}Mandant: {{ client_name }}<br>{% endif %}
+            {% if period_label %}Berichtszeitraum: {{ period_label }}<br>{% endif %}
             Erstellt am {{ date }}<br>
-            Version: {{ app_version }}<br>
+            Report-Version: {{ report_version }} &bull; Analyse: {{ app_version }}<br>
             {% if niche %}Branche: {{ niche }}<br>{% endif %}
             Datenbasis: {{ kpis.anzahl_zeilen | de_number(0) if kpis.anzahl_zeilen is defined else "n/v" }} Positionen
             in {{ kpis.anzahl_kategorien if kpis.anzahl_kategorien is defined else "n/v" }} Kategorien
@@ -131,20 +134,21 @@ TEMPLATE_HTML = """
     </div>
 
     <div class="header">
-        <div class="logo">Data<span>Deck</span></div>
+        <div class="logo">{{ brand_name }}</div>
         <div class="subtitle">
             Unternehmensanalyse &amp; Strategiebericht &bull; {{ date }}
             {% if niche %}&bull; {{ niche }}{% endif %}
         </div>
     </div>
 
-    <h2>Kernkennzahlen</h2>
+    {% if report_settings.show_kpis %}<h2>Kernkennzahlen</h2>
     <div class="kpi-container">
         <div class="kpi-box"><div class="kpi-title">Umsatz</div><div class="kpi-value">{% if aggregation_limited %}&mdash;{% else %}{{ kpis.gesamt_umsatz | de_number }}&nbsp;&euro;{% endif %}</div><div class="kpi-reason">{% if aggregation_limited %}Mehrere Währungen{% else %}Gemessene Umsatzbasis{% endif %}</div></div>
         <div class="kpi-box"><div class="kpi-title">Gewinn</div><div class="kpi-value">{% if revenue_only or aggregation_limited %}&mdash;{% else %}{{ kpis.gesamt_gewinn | de_number }}&nbsp;&euro;{% endif %}</div><div class="kpi-reason">{% if aggregation_limited %}Mehrere Währungen{% elif revenue_only %}Nicht berechenbar: Kostenbasis fehlt{% elif kpis.metrics.gewinn.status == 'ESTIMATED' %}Aus Umsatz minus Kosten{% else %}Aus Gewinnspalte{% endif %}</div></div>
         <div class="kpi-box"><div class="kpi-title">Marge</div><div class="kpi-value">{% if revenue_only or aggregation_limited %}&mdash;{% else %}{{ kpis.aktuelle_marge | de_number }}{% if kpis.aktuelle_marge == kpis.aktuelle_marge %}&nbsp;%{% endif %}{% endif %}</div><div class="kpi-reason">{% if aggregation_limited %}Mehrere Währungen{% elif revenue_only %}Nicht verfügbar{% else %}Gewinn / Umsatz{% endif %}</div></div>
         <div class="kpi-box"><div class="kpi-title">Datensätze</div><div class="kpi-value">{{ kpis.anzahl_zeilen | de_number(0) if kpis.anzahl_zeilen is defined else "n/v" }}</div><div class="kpi-reason">Bereinigte Datenzeilen</div></div>
     </div>
+    {% endif %}
     {% if aggregation_limited %}
     <div class="report-note">Mehrere Währungen wurden erkannt. Ohne dokumentierte Wechselkurse enthält dieser Bericht keine Finanzsummen, Rankings oder Zeitvergleiche.</div>
     {% endif %}
@@ -155,9 +159,11 @@ TEMPLATE_HTML = """
     </div>
     {% endif %}
 
-    {% if insights %}
+    {% if report_settings.show_ai_insights and insights %}
     <h2>KI-Insights</h2>
+    {% if report_settings.show_summary %}
     <div class="insight-box"><span class="insight-tag">Kurzfassung</span>{{ insights.zusammenfassung }}</div>
+    {% endif %}
     <div class="insight-box"><span class="insight-tag">Bedeutung</span>{{ insights.ziel_analyse }}</div>
     <strong style="font-size:10.5pt;">Handlungsoptionen</strong>
     <ul>
@@ -168,12 +174,12 @@ TEMPLATE_HTML = """
     {% if insights.datengrundlage %}
     <div class="insight-box"><span class="insight-tag">Datengrundlage</span>{{ insights.datengrundlage }}</div>
     {% endif %}
-    {% else %}
+    {% elif report_settings.show_ai_insights %}
     <h2>KI-Insights</h2>
     <p class="empty-note">Für diesen Bericht wurde keine KI-Analyse erstellt.</p>
     {% endif %}
 
-    {% if not aggregation_limited %}<h2>{% if revenue_only %}Umsatzstärkste Segmente{% else %}Gewinnstärkste Segmente{% endif %}</h2>
+    {% if report_settings.show_segments and not aggregation_limited %}<h2>{% if revenue_only %}Umsatzstärkste Segmente{% else %}Gewinnstärkste Segmente{% endif %}</h2>
     {% if kpis.top_performer %}
     <table>
         <thead><tr><th>Kategorie</th><th>{% if revenue_only %}Umsatz{% else %}Gewinn{% endif %}</th>{% if not revenue_only %}<th>Marge</th>{% endif %}</tr></thead>
@@ -197,7 +203,7 @@ TEMPLATE_HTML = """
     </table>
     {% else %}<p class="empty-note">Keine Kategoriendaten vorhanden.</p>{% endif %}{% endif %}
 
-    {% if kpis.time_analysis and kpis.time_analysis.available %}
+    {% if report_settings.show_time_series and kpis.time_analysis and kpis.time_analysis.available %}
     <h2>Zeitraum &amp; Entwicklung</h2>
     <p>Analysierter Zeitraum: {{ kpis.time_analysis.start.strftime('%d.%m.%Y') }} bis {{ kpis.time_analysis.end.strftime('%d.%m.%Y') }}.</p>
     {% if kpis.time_analysis.comparison_available %}
@@ -207,7 +213,9 @@ TEMPLATE_HTML = """
     {% else %}<p class="empty-note">{{ kpis.time_analysis.reason }}</p>{% endif %}
     {% endif %}
 
-    <h2>Datenqualität &amp; Methodik</h2>
+    {% if consultant_comment %}<h2>Beraterkommentar</h2><div class="insight-box">{{ consultant_comment }}</div>{% endif %}
+
+    {% if report_settings.show_methodology %}<h2>Datenqualität &amp; Methodik</h2>
     {% if data_quality %}
     <p>Analysequalität: <strong>{{ data_quality.level | replace('eingeschraenkt', 'eingeschränkt') | replace('nicht_ausreichend', 'nicht ausreichend') | capitalize }}</strong>; Vollständigkeit: <strong>{{ (data_quality.completeness * 100) | de_number(0) }} %</strong>.</p>
     <ul>
@@ -224,16 +232,37 @@ TEMPLATE_HTML = """
        Datum: {{ column_mapping.datum or '—' }}.</p>
     {% endif %}
     <p class="empty-note">Kennzahlen wurden deterministisch in DataDeck berechnet. Ergebnisse sollten vor geschäftlichen Entscheidungen fachlich geprüft werden. An die KI wurden ausschließlich aggregierte Kennzahlen und Kategorienamen übertragen, keine Rohzeilen.</p>
+    {% endif %}
+
+    {% if report_settings.footer_text or report_settings.contact_name or report_settings.contact_email %}
+    <div style="margin-top:24px;padding-top:10px;border-top:1px solid #E6E6EC;color:#6B6B7A;font-size:8.5pt;">
+        {{ report_settings.footer_text }}{% if report_settings.contact_name %}<br>{{ report_settings.contact_name }}{% endif %}{% if report_settings.contact_email %} &bull; {{ report_settings.contact_email }}{% endif %}
+    </div>
+    {% endif %}
 
 </body>
 </html>
-""".replace("__BRAND__", BRAND)
+"""
 
 _jinja_env = Environment(
     autoescape=select_autoescape(enabled_extensions=('html', 'xml'), default_for_string=True)
 )
 _jinja_env.filters['de_number'] = format_de_number
-_template = _jinja_env.from_string(TEMPLATE_HTML)
+_template = _jinja_env.from_string(TEMPLATE_HTML.replace("__BRAND__", "#4F46E5"))
+_template.globals.update(
+    app_version=APP_VERSION,
+    report_settings=normalize_report_settings(None),
+    consultant_comment="",
+    brand_name="DataDeck",
+    client_name="",
+    period_label="",
+    report_version=1,
+    logo_data_uri=None,
+    aggregation_limited=False,
+    revenue_only=False,
+    data_quality=None,
+    column_mapping={},
+)
 
 
 def generate_pdf(
@@ -243,6 +272,12 @@ def generate_pdf(
     revenue_only: bool = False,
     data_quality: Optional[dict] = None,
     column_mapping: Optional[dict] = None,
+    report_settings: Optional[dict] = None,
+    consultant_comment: str = "",
+    client_name: str = "",
+    period_label: str = "",
+    report_version: int = 1,
+    logo_bytes: bytes | None = None,
 ) -> bytes:
     """Rendert das HTML-Template (Jinja2 Auto-Escaping) und erzeugt ein PDF
     via WeasyPrint. kpis MUSS das Ergebnis von core.analysis.calculate_kpis
@@ -251,7 +286,9 @@ def generate_pdf(
         os.environ.setdefault("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib")
     from weasyprint import HTML
 
-    html_content = _template.render(
+    settings = normalize_report_settings(report_settings)
+    template = _jinja_env.from_string(TEMPLATE_HTML.replace("__BRAND__", settings["accent_color"]))
+    html_content = template.render(
         date=datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
         app_version=APP_VERSION,
         kpis=kpis,
@@ -261,5 +298,12 @@ def generate_pdf(
         data_quality=data_quality,
         column_mapping=column_mapping or kpis.get("column_mapping", {}),
         aggregation_limited=not kpis.get("financial_aggregation_available", True),
+        report_settings=settings,
+        consultant_comment=consultant_comment[:2_000],
+        brand_name=settings["company_name"] or "DataDeck",
+        client_name=client_name[:160],
+        period_label=period_label[:120],
+        report_version=max(1, int(report_version)),
+        logo_data_uri=validated_logo_data_uri(logo_bytes),
     )
     return HTML(string=html_content, url_fetcher=_blocking_url_fetcher).write_pdf()

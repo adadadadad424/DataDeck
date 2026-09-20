@@ -10,6 +10,8 @@ QA_SUITES = (
     "qa_beta_security.py",
     "qa_production.py",
     "qa_golden_datasets.py",
+    "qa_import_pipeline.py",
+    "qa_consulting.py",
     "qa_billing.py",
     "qa_runtime.py",
 )

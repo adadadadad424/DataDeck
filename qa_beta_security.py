@@ -202,6 +202,8 @@ class BetaSecurityTests(unittest.TestCase):
         beta.file_uploader(key="file_uploader").set_value((
             "kunde.csv", b"Kategorie,Umsatz,Gewinn\nBETA_CORP,900,90\n", "text/csv"
         )).run()
+        alpha.button(key="import_review_start").click().run()
+        beta.button(key="import_review_start").click().run()
         self.assertFalse(alpha.exception)
         self.assertFalse(beta.exception)
         self.assertEqual(alpha.session_state["raw_df"].iloc[0]["Kategorie"], "ALPHA_CORP")

@@ -44,6 +44,17 @@ import pandas as pd
 DEFAULT_MAX_COLUMNS = 250
 DEFAULT_MAX_XLSX_SHEETS = 50
 DEFAULT_MAX_XLSX_UNCOMPRESSED_MB = 250
+MISSING_VALUE_TOKENS = frozenset({
+    "", "null", "n/a", "na", "nan", "none", "-", "—", "k.a.", "k.a", "keine angabe",
+})
+SUPPORTED_CURRENCY_CODES = frozenset({
+    "EUR", "USD", "GBP", "CHF", "CAD", "AUD", "JPY", "CNY", "SEK", "NOK", "DKK", "PLN", "CZK",
+})
+GERMAN_MONTH_NAMES = {
+    "januar": "January", "februar": "February", "märz": "March", "maerz": "March",
+    "april": "April", "mai": "May", "juni": "June", "juli": "July", "august": "August",
+    "september": "September", "oktober": "October", "november": "November", "dezember": "December",
+}
 
 
 def _positive_env_int(name: str, default: int, maximum: int) -> int:
@@ -178,7 +189,8 @@ def parse_currency(val) -> float | None:
         return None
 
     if isinstance(val, (int, float)):
-        return float(val)
+        result = float(val)
+        return result if np.isfinite(result) else None
 
     val_str = str(val).strip()
 
@@ -240,10 +252,98 @@ def parse_currency(val) -> float | None:
     except ValueError:
         return None
 
+    if not np.isfinite(result):
+        return None
+
     if result == 0:
         return 0.0
 
     return -result if is_negative else result
+
+
+def parse_percentage(value) -> float | None:
+    """Parse percentages into percentage points without silently returning infinity."""
+    if pd.isna(value) or isinstance(value, bool):
+        return None
+    has_percent_sign = "%" in str(value)
+    parsed = parse_currency(value)
+    if parsed is None:
+        return None
+    if not has_percent_sign and abs(parsed) <= 1:
+        parsed *= 100
+    return parsed
+
+
+def _is_missing_marker(value) -> bool:
+    if pd.isna(value):
+        return True
+    return str(value).strip().casefold() in MISSING_VALUE_TOKENS
+
+
+def normalize_dataframe_structure(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize structural spreadsheet noise while preserving source values."""
+    normalized = df.copy()
+    normalized.attrs = df.attrs.copy()
+    seen: dict[str, int] = {}
+    columns: list[str] = []
+    renamed: dict[str, str] = {}
+    for index, raw_name in enumerate(normalized.columns, start=1):
+        name = str(raw_name).strip()
+        if not name or re.fullmatch(r"Unnamed:\s*\d+(?:\.\d+)?", name, flags=re.IGNORECASE):
+            name = f"Spalte_{index}"
+        count = seen.get(name.casefold(), 0) + 1
+        seen[name.casefold()] = count
+        unique_name = name if count == 1 else f"{name}__{count}"
+        columns.append(unique_name)
+        if unique_name != str(raw_name):
+            renamed[str(raw_name)] = unique_name
+    normalized.columns = columns
+
+    empty_columns = [column for column in normalized.columns if normalized[column].map(_is_missing_marker).all()]
+    if empty_columns:
+        normalized = normalized.drop(columns=empty_columns)
+
+    text_columns = normalized.select_dtypes(include=["object", "string"]).columns
+    for column in text_columns:
+        normalized[column] = normalized[column].map(
+            lambda value: pd.NA if _is_missing_marker(value) else value
+        )
+    normalized.attrs["renamed_columns"] = renamed
+    normalized.attrs["removed_empty_columns"] = empty_columns
+    return normalized
+
+
+def _parse_date_series(series: pd.Series) -> tuple[pd.Series, int]:
+    """Parse common business dates and report ambiguous slash dates."""
+    if pd.api.types.is_numeric_dtype(series):
+        numeric = pd.to_numeric(series, errors="coerce")
+        plausible = numeric.between(1, 100_000)
+        parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+        parsed.loc[plausible] = pd.to_datetime(
+            numeric.loc[plausible], unit="D", origin="1899-12-30", errors="coerce"
+        )
+        return parsed, 0
+
+    text = series.astype("string").str.strip()
+    for german, english in GERMAN_MONTH_NAMES.items():
+        text = text.str.replace(rf"\b{german}\b", english, case=False, regex=True)
+    ambiguous = text.str.extract(r"^(\d{1,2})/(\d{1,2})/(\d{2,4})$")
+    first = pd.to_numeric(ambiguous[0], errors="coerce")
+    second = pd.to_numeric(ambiguous[1], errors="coerce")
+    ambiguous_count = int(((first <= 12) & (second <= 12) & first.ne(second)).sum())
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    iso_mask = text.str.match(r"^\d{4}-\d{1,2}-\d{1,2}(?:\D|$)", na=False)
+    if iso_mask.any():
+        parsed.loc[iso_mask] = pd.to_datetime(text.loc[iso_mask], errors="coerce", yearfirst=True)
+    remaining = ~iso_mask & text.notna()
+    if remaining.any():
+        try:
+            parsed.loc[remaining] = pd.to_datetime(
+                text.loc[remaining], errors="coerce", dayfirst=True, format="mixed"
+            )
+        except (TypeError, ValueError):
+            parsed.loc[remaining] = pd.to_datetime(text.loc[remaining], errors="coerce", dayfirst=True)
+    return parsed, ambiguous_count
 
 
 def _parse_currency_series(series: pd.Series) -> pd.Series:
@@ -359,17 +459,21 @@ def assess_data_quality(
     for col in date_columns:
         values = raw_df[col].dropna()
         if not values.empty:
-            parsed = pd.to_datetime(values, errors="coerce")
+            parsed, _ = _parse_date_series(values)
             invalid_dates = max(invalid_dates, int(parsed.isna().sum()))
 
     currencies = set()
     for col in raw_df.select_dtypes(include=["object", "string"]).columns:
-        sample = " ".join(raw_df[col].dropna().astype(str).head(500).tolist())
-        symbol_map = {"€": "EUR", "$": "USD", "£": "GBP"}
+        sample = " ".join(raw_df[col].dropna().astype(str).head(2_000).tolist())
+        symbol_map = {"€": "EUR", "$": "USD", "£": "GBP", "Fr.": "CHF"}
         currencies.update(code for symbol, code in symbol_map.items() if symbol in sample)
         currencies.update(
             match.upper()
-            for match in re.findall(r"\b(EUR|USD|GBP|CHF)\b", sample, flags=re.IGNORECASE)
+            for match in re.findall(
+                r"\b(" + "|".join(sorted(SUPPORTED_CURRENCY_CODES)) + r")\b",
+                sample,
+                flags=re.IGNORECASE,
+            )
         )
 
     completeness = max(0.0, min(1.0, 1.0 - (missing_cells / total_cells)))
@@ -397,6 +501,15 @@ def assess_data_quality(
             "severity": "warning",
             "title": "Ungültige Datumswerte",
             "detail": f"{invalid_dates} Werte in Datumsspalten konnten nicht gelesen werden.",
+        })
+    if warnings.get("ambiguous_dates"):
+        issues.append({
+            "severity": "warning",
+            "title": "Mehrdeutiges Datumsformat",
+            "detail": (
+                f"{warnings['ambiguous_dates']} Datumswerte wurden als Tag/Monat/Jahr interpretiert. "
+                "Bitte prüfen Sie die Zuordnung vor dem Bericht."
+            ),
         })
     if len(currencies) > 1:
         issues.append({
@@ -582,7 +695,123 @@ def _manual_column(
     return selected
 
 
-def _read_csv_robust(file_content: bytes, nrows: int) -> pd.DataFrame:
+def _decode_csv(file_content: bytes) -> tuple[str, str]:
+    for encoding in ('utf-8-sig', 'cp1252', 'latin1'):
+        try:
+            return file_content.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Die CSV-Datei konnte nicht als Text gelesen werden.")
+
+
+def _row_preview(frame: pd.DataFrame, limit: int = 5) -> list[list[str]]:
+    return [
+        ["" if _is_missing_marker(value) else str(value)[:80] for value in row]
+        for row in frame.head(limit).itertuples(index=False, name=None)
+    ]
+
+
+def _csv_preview_frame(text: str, delimiter: str, limit: int = 12) -> pd.DataFrame:
+    """Build a ragged-row-safe CSV preview without assuming the title row width."""
+    try:
+        rows = []
+        for row in csv.reader(io.StringIO(text), delimiter=delimiter):
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+    except csv.Error as error:
+        raise ValueError("Die CSV-Vorschau konnte nicht gelesen werden.") from error
+    width = max((len(row) for row in rows), default=0)
+    if width == 0:
+        raise ValueError("Die CSV-Datei enthält keine lesbaren Spalten.")
+    return pd.DataFrame([row + [None] * (width - len(row)) for row in rows])
+
+
+def _header_candidates(preview: pd.DataFrame, limit: int = 10) -> list[dict]:
+    candidates = []
+    for index in range(min(limit, len(preview))):
+        values = [value for value in preview.iloc[index].tolist() if not _is_missing_marker(value)]
+        if len(values) < 2:
+            continue
+        score = _header_score(values)
+        text_share = sum(not str(value).replace(".", "", 1).isdigit() for value in values) / len(values)
+        structural_score = int(text_share >= 0.7 and len({str(value).casefold() for value in values}) == len(values))
+        candidates.append({"row": index, "score": score + structural_score, "values": [str(v)[:50] for v in values[:8]]})
+    return sorted(candidates, key=lambda item: (-item["score"], item["row"]))
+
+
+def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
+    """Inspect sheets and likely header rows without persisting uploaded bytes."""
+    if not file_content:
+        raise ValueError("Die hochgeladene Datei ist leer (0 Byte).")
+    name_lower = file_name.lower()
+    if name_lower.endswith(".csv"):
+        text, encoding = _decode_csv(file_content)
+        detected = _detect_csv_header(text, max_scan_rows=10)
+        delimiter = detected[1] if detected else None
+        if delimiter is None:
+            try:
+                delimiter = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|").delimiter
+            except csv.Error:
+                delimiter = ","
+        preview = _csv_preview_frame(text, delimiter)
+        candidates = _header_candidates(preview)
+        selected = detected[0] if detected else (candidates[0]["row"] if candidates else 0)
+        confidence = "hoch" if candidates and candidates[0]["score"] >= 4 else "mittel" if candidates else "niedrig"
+        return {
+            "kind": "csv", "encoding": encoding, "delimiter": delimiter,
+            "sheets": [{
+                "name": "CSV", "rows": max(0, len(text.splitlines()) - selected - 1),
+                "columns": int(preview.shape[1]), "header_candidates": candidates,
+                "suggested_header_row": int(selected), "header_confidence": confidence,
+                "preview_row_count": int(len(preview)),
+                "preview": _row_preview(preview, limit=10),
+            }],
+            "suggested_sheet": "CSV", "sheet_confidence": "hoch",
+        }
+    if not name_lower.endswith(".xlsx"):
+        raise ValueError("Bitte lade ausschließlich CSV- oder XLSX-Dateien hoch.")
+
+    max_columns = _positive_env_int("MAX_DATASET_COLUMNS", DEFAULT_MAX_COLUMNS, 2_000)
+    _validate_xlsx_container(file_content, max_columns)
+    try:
+        import openpyxl
+
+        workbook = openpyxl.load_workbook(
+            io.BytesIO(file_content), read_only=True, data_only=True, keep_links=False
+        )
+        sheets = []
+        for worksheet in workbook.worksheets:
+            rows = list(worksheet.iter_rows(min_row=1, max_row=min(12, worksheet.max_row), values_only=True))
+            width = max((len(row) for row in rows), default=0)
+            padded = [list(row) + [None] * (width - len(row)) for row in rows]
+            preview = pd.DataFrame(padded)
+            candidates = _header_candidates(preview)
+            selected = candidates[0]["row"] if candidates else 0
+            score = candidates[0]["score"] if candidates else 0
+            sheets.append({
+                "name": str(worksheet.title), "rows": max(0, int(worksheet.max_row) - selected - 1),
+                "columns": int(worksheet.max_column), "header_candidates": candidates,
+                "suggested_header_row": int(selected),
+                "header_confidence": "hoch" if score >= 4 else "mittel" if score >= 1 else "niedrig",
+                "tabular_score": score + int(worksheet.max_row > selected + 1),
+                "preview_row_count": int(len(preview)),
+                "preview": _row_preview(preview, limit=10),
+            })
+        workbook.close()
+    except Exception as error:
+        raise ValueError("Die XLSX-Struktur konnte nicht geprüft werden.") from error
+    if not sheets:
+        raise ValueError("Keine lesbaren Tabellenblätter gefunden.")
+    best = max(sheets, key=lambda item: (item["tabular_score"], item["rows"], item["columns"]))
+    tied = sum(item["tabular_score"] == best["tabular_score"] for item in sheets) > 1
+    return {
+        "kind": "xlsx", "sheets": sheets, "suggested_sheet": best["name"],
+        "sheet_confidence": "mittel" if tied else "hoch",
+    }
+
+
+def _read_csv_robust(file_content: bytes, nrows: int, header_row: int | None = None) -> pd.DataFrame:
     """
     Liest eine CSV-Datei robust ein (Audit DATA-1, DATA-2):
     - erkennt automatisch das Trennzeichen (Komma ODER Semikolon - in
@@ -598,6 +827,14 @@ def _read_csv_robust(file_content: bytes, nrows: int) -> pd.DataFrame:
         try:
             text = file_content.decode(encoding)
             detected_header = _detect_csv_header(text)
+            if header_row is not None:
+                delimiter = detected_header[1] if detected_header else None
+                if delimiter is None:
+                    try:
+                        delimiter = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|").delimiter
+                    except csv.Error:
+                        delimiter = ","
+                return pd.read_csv(io.StringIO(text), sep=delimiter, skiprows=header_row, nrows=nrows)
             if detected_header:
                 skiprows, delimiter = detected_header
                 return pd.read_csv(
@@ -645,7 +882,10 @@ def _read_csv_robust(file_content: bytes, nrows: int) -> pd.DataFrame:
 def load_and_validate_file(
     file_content: bytes,
     file_name: str,
-    is_premium: bool
+    is_premium: bool,
+    *,
+    sheet_name: str | None = None,
+    header_row: int | None = None,
 ) -> tuple[pd.DataFrame, bool, int]:
     """
     Validiert Limit und lädt Daten. Liest höchstens so viele Zeilen wie im
@@ -673,7 +913,7 @@ def load_and_validate_file(
 
     if name_lower.endswith('.csv'):
         _validate_csv_content(file_content, max_columns)
-        df = _read_csv_robust(file_content, nrows=max_rows + 1)
+        df = _read_csv_robust(file_content, nrows=max_rows + 1, header_row=header_row)
 
     elif name_lower.endswith('.xlsx'):
         _validate_xlsx_container(file_content, max_columns)
@@ -685,12 +925,17 @@ def load_and_validate_file(
             )
             first_df: pd.DataFrame | None = None
             first_error: Exception | None = None
+            first_sheet: str | None = None
 
-            for sheet_name in excel_file.sheet_names:
+            selected_sheets = [sheet_name] if sheet_name is not None else excel_file.sheet_names
+            if sheet_name is not None and sheet_name not in excel_file.sheet_names:
+                raise ValueError(f"Das Tabellenblatt '{sheet_name}' existiert nicht.")
+            for current_sheet in selected_sheets:
                 try:
                     candidate = pd.read_excel(
                         excel_file,
-                        sheet_name=sheet_name,
+                        sheet_name=current_sheet,
+                        header=0 if header_row is None else header_row,
                         nrows=max_rows + 1,
                     )
                 except Exception as sheet_error:
@@ -700,14 +945,16 @@ def load_and_validate_file(
 
                 if first_df is None:
                     first_df = candidate
+                    first_sheet = str(current_sheet)
 
                 if candidate.empty or len(candidate.columns) == 0:
                     continue
 
                 try:
                     clean_and_prepare_data(candidate)
-                    candidate.attrs["source_sheet"] = str(sheet_name)
+                    candidate.attrs["source_sheet"] = str(current_sheet)
                     candidate.attrs["sheet_names"] = [str(name) for name in excel_file.sheet_names]
+                    candidate.attrs["header_row"] = int(header_row or 0)
                     df = candidate
                     break
                 except ValueError:
@@ -715,8 +962,9 @@ def load_and_validate_file(
             else:
                 if first_df is not None:
                     df = first_df
-                    df.attrs["source_sheet"] = str(excel_file.sheet_names[0])
+                    df.attrs["source_sheet"] = first_sheet or str(excel_file.sheet_names[0])
                     df.attrs["sheet_names"] = [str(name) for name in excel_file.sheet_names]
+                    df.attrs["header_row"] = int(header_row or 0)
                 else:
                     raise first_error or ValueError("Keine lesbaren Tabellenblaetter gefunden.")
         except Exception as e:
@@ -742,6 +990,7 @@ def load_and_validate_file(
             "Bitte lade ausschließlich CSV- oder XLSX-Dateien hoch."
         )
 
+    df = normalize_dataframe_structure(df)
     if df.empty or len(df.columns) == 0:
         raise ValueError(
             "Die hochgeladene Datei enthält keine Datenzeilen."
@@ -762,6 +1011,7 @@ def clean_and_prepare_data(
     column_mapping: dict | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Bereinigt und bereitet Finanzdaten auf."""
+    df = normalize_dataframe_structure(df)
 
     # Keyword-Listen zentral an EINER Stelle (Audit: v3.2 hatte dieselbe
     # Erkennung dreifach - main.py, ai_insights.py, report_builder.py -
@@ -967,7 +1217,7 @@ def clean_and_prepare_data(
         revenue_only_mode = False
     else:
         if kosten_col:
-            kosten_values = _parse_currency_series(df[kosten_col]).abs()
+            kosten_values = _parse_currency_series(df[kosten_col])
             df['Gewinn_Clean'] = df['Umsatz_Clean'] - kosten_values
             gewinn_source = f"{umsatz_col} - {kosten_col}"
             revenue_only_mode = False
@@ -1006,15 +1256,31 @@ def clean_and_prepare_data(
             .str.strip()
         )
         kategorie_series = kategorie_series.replace('', 'Unbekannt')
-        df['Kategorie_Clean'] = kategorie_series
+        df['Kategorie_Original'] = kategorie_series
+        if column_mapping and column_mapping.get("normalize_categories"):
+            canonical: dict[str, str] = {}
+            normalized_values = []
+            for value in kategorie_series:
+                key = str(value).strip().casefold()
+                canonical.setdefault(key, str(value).strip())
+                normalized_values.append(canonical[key])
+            df['Kategorie_Clean'] = normalized_values
+        else:
+            df['Kategorie_Clean'] = kategorie_series
     else:
         df['Kategorie_Clean'] = "Allgemein"
 
     invalid_date = 0
+    ambiguous_dates = 0
     if datum_col:
-        parsed_dates = pd.to_datetime(df[datum_col], errors="coerce")
+        parsed_dates, ambiguous_dates = _parse_date_series(df[datum_col])
         invalid_date = int(parsed_dates.isna().sum() - df[datum_col].isna().sum())
         df['Datum_Clean'] = parsed_dates
+        if ambiguous_dates:
+            mapping_warnings.append(
+                f"{ambiguous_dates} Datumswerte sind mehrdeutig (z. B. 01/02/2026). "
+                "DataDeck hat die deutsche Reihenfolge Tag/Monat verwendet; bitte bestätigen."
+            )
 
     for label, source in (("Umsatz", manual_umsatz), ("Gewinn", manual_gewinn), ("Kosten", manual_kosten)):
         if source:
@@ -1032,7 +1298,7 @@ def clean_and_prepare_data(
     if manual_datum:
         original_dates = df[manual_datum].dropna()
         date_share = (
-            float(pd.to_datetime(original_dates, errors="coerce").notna().mean())
+            float(_parse_date_series(original_dates)[0].notna().mean())
             if not original_dates.empty else 0.0
         )
         if date_share < 0.7:
@@ -1090,6 +1356,7 @@ def clean_and_prepare_data(
         "kategorie_source": str(kategorie_col) if kategorie_col else None,
         "datum_source": str(datum_col) if datum_col else None,
         "invalid_date": max(0, invalid_date),
+        "ambiguous_dates": ambiguous_dates,
         "header_promoted": header_promoted,
         "revenue_only_mode": revenue_only_mode,
         "metric_status": {
@@ -1110,6 +1377,9 @@ def clean_and_prepare_data(
         "mapping_warnings": mapping_warnings,
         "source_sheet": df.attrs.get("source_sheet"),
         "sheet_names": list(df.attrs.get("sheet_names", [])),
+        "header_row": int(df.attrs.get("header_row", 0)),
+        "renamed_columns": dict(df.attrs.get("renamed_columns", {})),
+        "removed_empty_columns": list(df.attrs.get("removed_empty_columns", [])),
     }
 
     return df, warnings

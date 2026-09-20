@@ -4,6 +4,7 @@ import datetime
 import unittest
 
 from core.formatting import format_compact_number, format_de_date, format_de_number
+from core.report_config import normalize_report_settings, validate_accent_color, validated_logo_data_uri
 from main import _mapping_requires_review, _stable_mapping_key
 
 
@@ -54,6 +55,24 @@ class UIQualityTests(unittest.TestCase):
         first = {"umsatz": "Revenue", "gewinn": "Profit"}
         second = {"gewinn": "Profit", "umsatz": "Revenue"}
         self.assertEqual(_stable_mapping_key(first), _stable_mapping_key(second))
+
+    def test_report_accent_rejects_low_contrast_and_invalid_values(self):
+        self.assertEqual(validate_accent_color("#000000"), "#4F46E5")
+        self.assertEqual(validate_accent_color("not-a-color"), "#4F46E5")
+
+    def test_report_accent_accepts_valid_mid_tone(self):
+        self.assertEqual(validate_accent_color("#2277AA"), "#2277AA")
+
+    def test_logo_accepts_real_png_signature_only(self):
+        uri = validated_logo_data_uri(b"\x89PNG\r\n\x1a\ncontent")
+        self.assertTrue(uri.startswith("data:image/png;base64,"))
+        with self.assertRaises(ValueError):
+            validated_logo_data_uri(b"<svg><script>alert(1)</script></svg>")
+
+    def test_report_settings_are_bounded(self):
+        settings = normalize_report_settings({"company_name": "A" * 500, "show_kpis": False})
+        self.assertEqual(len(settings["company_name"]), 160)
+        self.assertFalse(settings["show_kpis"])
 
 
 if __name__ == "__main__":

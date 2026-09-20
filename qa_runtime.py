@@ -23,6 +23,14 @@ def kpis(app):
     )
 
 
+def upload_and_start(app, value):
+    app.file_uploader(key="file_uploader").set_value(value).run()
+    assert_ok(app)
+    app.button(key="import_review_start").click().run()
+    assert_ok(app)
+    return app
+
+
 def main():
     env_file = Path(".env")
     env_backup = Path("work/.env.qa_runtime_backup")
@@ -56,8 +64,7 @@ def main():
         assert app.session_state["pdf_bytes"].startswith(b"%PDF-")
 
         csv = b"Kategorie,Umsatz,Gewinn\nPlus,1000,300\nMinus,500,-400\n"
-        app.file_uploader(key="file_uploader").set_value(("sample.csv", csv, "text/csv")).run()
-        assert_ok(app)
+        upload_and_start(app, ("sample.csv", csv, "text/csv"))
         assert kpis(app) == {"Umsatz": "1.500 €", "Gewinn": "-100 €", "Marge": "-6,7 %", "Datensätze": "2"}
         assert app.session_state["pdf_bytes"] is None
         assert any("lokale KPI-Analyse" in item.value for item in app.info)
@@ -78,16 +85,12 @@ def main():
 
         updated_csv = csv.replace(b"1000", b"2000")
         assert len(updated_csv) == len(csv)
-        app.file_uploader(key="file_uploader").set_value(("sample.csv", updated_csv, "text/csv")).run()
-        assert_ok(app)
+        upload_and_start(app, ("sample.csv", updated_csv, "text/csv"))
         assert kpis(app)["Umsatz"] == "2.500 €"
         assert app.session_state["category_filter"] == ""
 
         revenue_only_csv = b"Segment,Revenue\nEnterprise,2000\nStarter,500\n"
-        app.file_uploader(key="file_uploader").set_value(
-            ("revenue_only.csv", revenue_only_csv, "text/csv")
-        ).run()
-        assert_ok(app)
+        upload_and_start(app, ("revenue_only.csv", revenue_only_csv, "text/csv"))
         assert kpis(app)["Gewinn"] == "—"
         assert kpis(app)["Marge"] == "—"
         assert app.number_input(key="ziel_marge_input").disabled is True
@@ -103,8 +106,7 @@ def main():
         sheet.append(["Excel B", 200, -50])
         buffer = io.BytesIO()
         workbook.save(buffer)
-        app.file_uploader(key="file_uploader").set_value(("sample.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).run()
-        assert_ok(app)
+        upload_and_start(app, ("sample.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
         assert kpis(app)["Umsatz"] == "1.000 €"
 
         app.session_state["ai_insights"] = {

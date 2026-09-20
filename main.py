@@ -18,7 +18,7 @@ vorherigen QA-Runde, 53/54 -> nach Bugfix 54/54 - siehe qa_test_final.py):
 Die App bleibt bewusst eine gefuehrte Einzelseiten-Ansicht. Stripe-Billing
 ist als standardmaessig deaktivierte, serverseitige Infrastruktur in
 billing/ vorbereitet; Aktivierung und Testbetrieb sind in BILLING.md
-dokumentiert. White-Label- und Seats-Funktionen sind nicht implementiert.
+dokumentiert. Mandantenhistorie speichert ausschließlich aggregierte Ergebnisse.
 """
 
 import datetime
@@ -27,6 +27,7 @@ import logging
 import math
 import os
 import time
+import uuid
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -37,6 +38,10 @@ from billing.config import BillingConfig, billing_enabled
 from billing.entitlements import entitlement_for
 from billing.models import Identity, stable_user_id
 from billing.service import BillingService
+from consulting.analysis import compare_snapshots, detect_trends, find_best_comparison
+from consulting.models import AnalysisSnapshot
+from consulting.serialization import aggregate_result
+from consulting.store import PostgresConsultingStore
 
 from core.ai_insights import (
     AIConfigError,
@@ -46,7 +51,12 @@ from core.ai_insights import (
     generate_local_summary,
 )
 from core.analysis import calculate_kpis, filter_data
-from core.data_processing import assess_data_quality, clean_and_prepare_data, load_and_validate_file
+from core.data_processing import (
+    assess_data_quality,
+    clean_and_prepare_data,
+    inspect_file_structure,
+    load_and_validate_file,
+)
 from core.formatting import format_compact_number, format_de_date, format_de_number
 from core.report_builder import generate_pdf
 from core.security import escape_html, mask_pii, scan_dataframe_for_pii
@@ -64,6 +74,19 @@ from core.runtime_security import (
     production_config_errors,
     safe_exception_name,
 )
+
+
+def _uncached_decorator(*args, **kwargs):
+    del args, kwargs
+
+    def decorate(function):
+        return function
+
+    return decorate
+
+
+_cache_resource = getattr(st, "cache_resource", _uncached_decorator)
+_cache_data = getattr(st, "cache_data", _uncached_decorator)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -98,6 +121,25 @@ DEMO_DATA = {
 }
 
 
+@_cache_resource(show_spinner=False)
+def _consulting_store(database_url: str) -> PostgresConsultingStore:
+    return PostgresConsultingStore(database_url)
+
+
+@_cache_data(ttl=20, show_spinner=False)
+def _consulting_clients(database_url: str, owner_user_id: str, cache_version: int):
+    del cache_version
+    return _consulting_store(database_url).list_clients(owner_user_id)
+
+
+@_cache_data(ttl=20, show_spinner=False)
+def _consulting_history(
+    database_url: str, owner_user_id: str, client_id: str, cache_version: int,
+):
+    del cache_version
+    return _consulting_store(database_url).list_analyses(owner_user_id, client_id)
+
+
 def _init_session_state() -> None:
     defaults = {
         "theme": DEFAULT_THEME,
@@ -105,6 +147,7 @@ def _init_session_state() -> None:
         "data_source": None,
         "data_signature": None,
         "last_upload_signature": None,
+        "pending_upload_hash": None,
         "ai_insights": None,
         "ai_insights_key": None,
         "ai_insights_source": None,
@@ -134,6 +177,23 @@ def _init_session_state() -> None:
         "prepared_quality_cache": None,
         "kpi_cache_key": None,
         "kpi_cache": None,
+        "import_review_signature": None,
+        "import_inspection": None,
+        "upload_truncated": False,
+        "upload_max_rows": None,
+        "consultant_comment": "",
+        "report_settings": {
+            "show_summary": True, "show_kpis": True, "show_segments": True,
+            "show_time_series": True, "show_ai_insights": True, "show_methodology": True,
+            "company_name": "", "accent_color": "#4F46E5", "contact_name": "",
+            "contact_email": "", "footer_text": "",
+        },
+        "report_logo_bytes": None,
+        "report_version": 1,
+        "dataset_fingerprint": None,
+        "consulting_cache_version": 0,
+        "saved_analysis_id": None,
+        "saved_analysis_client_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -329,6 +389,36 @@ def _compute_insight_key(kpis: dict, ziel_marge: float | None, niche: str, is_pr
     ])
 
 
+def _report_presentation_key() -> str:
+    settings = tuple(
+        sorted((str(key), str(value)) for key, value in st.session_state.report_settings.items())
+    )
+    logo = st.session_state.report_logo_bytes or b""
+    payload = repr((settings, st.session_state.consultant_comment)).encode("utf-8") + logo
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _as_date(value, fallback: datetime.date) -> datetime.date:
+    if value is None or pd.isna(value):
+        return fallback
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        return pd.Timestamp(value).date()
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _report_period_label(kpis: dict) -> str:
+    date_range = kpis.get("date_range") or {}
+    start, end = date_range.get("start"), date_range.get("end")
+    if start is None or end is None or pd.isna(start) or pd.isna(end):
+        return ""
+    return f"{format_de_date(start)} bis {format_de_date(end)}"
+
+
 def _card_html(html_inner: str, extra_class: str = "") -> str:
     class_name = f"dd-card {extra_class}".strip()
     return f'<div class="{class_name}">{html_inner}</div>'
@@ -408,6 +498,10 @@ def _reset_analysis_outputs() -> None:
     st.session_state.pdf_bytes = None
     st.session_state.pdf_filename = None
     st.session_state.pdf_context_key = None
+    st.session_state.consultant_comment = ""
+    st.session_state.saved_analysis_id = None
+    st.session_state.saved_analysis_client_id = None
+    st.session_state.report_version = 1
 
 
 def _reset_data_caches() -> None:
@@ -418,6 +512,14 @@ def _reset_data_caches() -> None:
         "kpi_cache_key", "kpi_cache",
     ):
         st.session_state[key] = None
+
+
+def _reset_import_review() -> None:
+    st.session_state.import_review_signature = None
+    st.session_state.import_inspection = None
+    st.session_state.upload_truncated = False
+    st.session_state.upload_max_rows = None
+    st.session_state.pending_upload_hash = None
 
 
 def _effective_column_mapping() -> dict | None:
@@ -553,6 +655,12 @@ def _render_column_mapping_controls(df_raw: pd.DataFrame, warnings: dict | None 
                     format_func=_mapping_option_label,
                     key="mapping_datum_select",
                 )
+            normalize_categories = st.checkbox(
+                "Groß-/Kleinschreibung in Kategorien zusammenführen",
+                value=bool(mapping.get("normalize_categories", False)),
+                key="mapping_normalize_categories",
+                help="Enterprise, enterprise und ENTERPRISE werden gemeinsam ausgewertet; Originalwerte bleiben erhalten.",
+            )
 
             if st.form_submit_button("Zuordnung übernehmen", width="stretch"):
                 st.session_state.column_mapping = {
@@ -561,6 +669,7 @@ def _render_column_mapping_controls(df_raw: pd.DataFrame, warnings: dict | None 
                     "kosten": kosten,
                     "kategorie": kategorie,
                     "datum": datum,
+                    "normalize_categories": normalize_categories,
                 }
                 _reset_filters()
                 _reset_analysis_outputs()
@@ -589,6 +698,11 @@ def main() -> None:
                 st.session_state.billing_return_synced = True
         except Exception as error:
             _log_event("BILLING_UNAVAILABLE", logging.ERROR, error_type=safe_exception_name(error))
+    consulting_store = None
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url.startswith(("postgresql://", "postgres://")):
+        consulting_store = _consulting_store(database_url)
+    selected_client = None
     theme = get_theme(st.session_state.theme)  # Vorlaeufig fuer die Sidebar; nach dem Theme-Toggle unten neu berechnet.
 
     with st.sidebar:
@@ -611,6 +725,55 @@ def main() -> None:
         st.markdown('<hr class="dd-divider" style="margin:14px 0;">', unsafe_allow_html=True)
         st.caption("BRANCHE")
         niche = st.selectbox("Branchen-Fokus", NISCHEN, key="niche_select", label_visibility="collapsed")
+
+        if consulting_store is not None:
+            st.markdown('<hr class="dd-divider" style="margin:14px 0;">', unsafe_allow_html=True)
+            st.caption("MANDANT")
+            try:
+                clients = _consulting_clients(
+                    database_url,
+                    billing_identity.user_id,
+                    st.session_state.consulting_cache_version,
+                )
+                client_options = ["__quick__"] + [client.client_id for client in clients]
+                client_by_id = {client.client_id: client for client in clients}
+                selected_client_id = st.selectbox(
+                    "Analysekontext",
+                    client_options,
+                    format_func=lambda value: "Einmalige Schnellanalyse" if value == "__quick__" else client_by_id[value].name,
+                    key="consulting_client_select",
+                    label_visibility="collapsed",
+                )
+                selected_client = client_by_id.get(selected_client_id)
+                with st.expander("Mandant anlegen", expanded=False):
+                    with st.form("create_client_form"):
+                        new_client_name = st.text_input("Mandantenname", max_chars=160)
+                        new_client_reference = st.text_input("Interne Referenz (optional)", max_chars=120)
+                        if st.form_submit_button("Mandant speichern", width="stretch"):
+                            consulting_store.create_client(
+                                billing_identity.user_id, new_client_name, new_client_reference
+                            )
+                            st.session_state.consulting_cache_version += 1
+                            st.rerun()
+                if selected_client is not None:
+                    with st.expander("Mandant verwalten", expanded=False):
+                        st.caption("Beim Löschen werden Analysen und Report-Metadaten dieses Mandanten entfernt.")
+                        delete_confirmed = st.checkbox(
+                            f"Löschen von {selected_client.name} bestätigen",
+                            key="delete_client_confirmed",
+                        )
+                        if st.button(
+                            "Mandant löschen", key="delete_client_btn",
+                            disabled=not delete_confirmed, width="stretch",
+                        ):
+                            consulting_store.delete_client(
+                                billing_identity.user_id, selected_client.client_id
+                            )
+                            st.session_state.consulting_cache_version += 1
+                            st.rerun()
+            except Exception as error:
+                _log_event("CONSULTING_STORE_UNAVAILABLE", logging.ERROR, error_type=safe_exception_name(error))
+                st.caption("Mandantenhistorie ist momentan nicht verfügbar.")
 
         if is_production:
             is_premium = entitlement_for(billing_user).has_access if billing_user else True
@@ -674,9 +837,11 @@ def main() -> None:
         if st.button("Demo-Daten laden", key="demo_btn", width="stretch"):
             _reset_filters()
             _reset_data_caches()
+            _reset_import_review()
             st.session_state.raw_df = pd.DataFrame(DEMO_DATA)
             st.session_state.data_source = "demo"
             st.session_state.data_signature = f"demo_{is_premium}"
+            st.session_state.dataset_fingerprint = hashlib.sha256(b"datadeck-demo-v1").hexdigest()
             st.session_state.column_mapping = {}
             st.session_state.revenue_only_mode = False
             _reset_analysis_outputs()
@@ -700,34 +865,32 @@ def main() -> None:
     theme = get_theme(st.session_state.theme)
     st.markdown(inject_theme_css(theme), unsafe_allow_html=True)
 
-    # --- Datei-Upload verarbeiten ---
+    # --- Datei prüfen und Analyse bewusst bestätigen ---
     if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
-        content_hash = dataset_hash(file_bytes)
-        signature = (uploaded_file.name, content_hash, is_premium)
+        signature = (
+            uploaded_file.name,
+            int(getattr(uploaded_file, "size", 0)),
+            str(getattr(uploaded_file, "file_id", "")),
+            is_premium,
+        )
         if st.session_state.last_upload_signature != signature:
+            file_bytes = uploaded_file.getvalue()
+            content_hash = dataset_hash(file_bytes)
             _log_event("UPLOAD_STARTED", bytes=len(file_bytes), dataset=content_hash[:12])
             try:
-                df_loaded, was_truncated, max_rows = load_and_validate_file(file_bytes, uploaded_file.name, is_premium)
-                _log_event(
-                    "UPLOAD_SUCCESS", bytes=len(file_bytes), rows=len(df_loaded),
-                    columns=len(df_loaded.columns), truncated=was_truncated,
-                    dataset=content_hash[:12],
-                )
-                if was_truncated:
-                    st.warning(
-                        f"Zeilenlimit erreicht: Im {'Premium' if is_premium else 'Free'}-Tier werden "
-                        f"maximal {max_rows:,} Zeilen verarbeitet."
-                    )
-                st.session_state.raw_df = df_loaded
+                st.session_state.import_inspection = inspect_file_structure(file_bytes, uploaded_file.name)
+                st.session_state.import_review_signature = signature
+                st.session_state.pending_upload_hash = content_hash
+                st.session_state.raw_df = None
                 _reset_data_caches()
                 _reset_filters()
-                st.session_state.data_source = "upload"
-                st.session_state.data_signature = f"{content_hash}_{is_premium}"
+                st.session_state.data_source = None
+                st.session_state.data_signature = None
+                st.session_state.dataset_fingerprint = None
                 st.session_state.column_mapping = {}
                 _reset_analysis_outputs()
             except ValueError as e:
-                st.error(f"Datei konnte nicht verarbeitet werden: {e}")
+                st.error(f"Datei konnte nicht geprüft werden: {e}")
                 _log_event("UPLOAD_REJECTED", logging.WARNING, error_type=safe_exception_name(e))
                 st.session_state.raw_df = None
                 _reset_data_caches()
@@ -737,15 +900,99 @@ def main() -> None:
                 st.session_state.raw_df = None
                 _reset_data_caches()
             st.session_state.last_upload_signature = signature
+
+        inspection = st.session_state.import_inspection
+        if st.session_state.raw_df is None and inspection:
+            st.markdown('<div class="dd-eyebrow">IMPORT PRÜFEN</div>', unsafe_allow_html=True)
+            st.title("Daten prüfen")
+            st.write("Bestätigen Sie Tabellenblatt und Kopfzeile, bevor DataDeck Kennzahlen berechnet.")
+            sheets = inspection["sheets"]
+            sheet_names = [sheet["name"] for sheet in sheets]
+            suggested_sheet = inspection.get("suggested_sheet") or sheet_names[0]
+            selected_sheet = st.selectbox(
+                "Tabellenblatt",
+                sheet_names,
+                index=sheet_names.index(suggested_sheet) if suggested_sheet in sheet_names else 0,
+                key="import_sheet_select",
+            )
+            sheet_info = next(sheet for sheet in sheets if sheet["name"] == selected_sheet)
+            candidates = sheet_info.get("header_candidates") or [{"row": 0, "values": []}]
+            preview_count = max(1, int(sheet_info.get("preview_row_count", len(sheet_info.get("preview", [])))))
+            candidate_rows = list(range(min(10, preview_count)))
+            suggested_header_row = int(sheet_info.get("suggested_header_row", 0))
+            if suggested_header_row not in candidate_rows:
+                candidate_rows.append(suggested_header_row)
+                candidate_rows.sort()
+            selected_header = st.selectbox(
+                "Zeile mit Spaltenüberschriften",
+                candidate_rows,
+                index=candidate_rows.index(suggested_header_row),
+                format_func=lambda row: f"Zeile {row + 1}",
+                key="import_header_select",
+            )
+            confidence_label = {
+                "hoch": "Hoch", "mittel": "Mittel – bitte prüfen", "niedrig": "Niedrig – Bestätigung erforderlich",
+            }.get(sheet_info.get("header_confidence"), "Bitte prüfen")
+            preview_rows = sheet_info.get("preview", [])
+            selected_columns = (
+                [value for value in preview_rows[selected_header] if value]
+                if selected_header < len(preview_rows) else []
+            )
+            column_preview = ", ".join(selected_columns[:8])
+            _card(
+                f'<div class="dd-eyebrow">DATEISTRUKTUR</div>'
+                f'<b>{format_de_number(sheet_info.get("rows", 0), 0)} Datenzeilen · '
+                f'{format_de_number(sheet_info.get("columns", 0), 0)} Spalten</b><br>'
+                f'<span class="dd-muted">Header-Sicherheit: {escape_html(confidence_label)} · '
+                f'Sheet: {escape_html(selected_sheet)}</span>'
+                + (
+                    f'<br><span class="dd-muted">Erkannte Überschriften: '
+                    f'{escape_html(column_preview)}</span>'
+                    if column_preview else ""
+                )
+            )
+            preview_rows = preview_rows[:5]
+            if preview_rows:
+                with st.expander("Dateivorschau", expanded=sheet_info.get("header_confidence") != "hoch"):
+                    st.code("\n".join(" | ".join(row) for row in preview_rows), language=None)
+            if st.button("Analyse starten", type="primary", key="import_review_start", width="stretch"):
+                try:
+                    file_bytes = uploaded_file.getvalue()
+                    content_hash = st.session_state.pending_upload_hash or dataset_hash(file_bytes)
+                    df_loaded, was_truncated, max_rows = load_and_validate_file(
+                        file_bytes,
+                        uploaded_file.name,
+                        is_premium,
+                        sheet_name=None if inspection["kind"] == "csv" else selected_sheet,
+                        header_row=int(selected_header),
+                    )
+                    _log_event(
+                        "UPLOAD_SUCCESS", bytes=len(file_bytes), rows=len(df_loaded),
+                        columns=len(df_loaded.columns), truncated=was_truncated,
+                        dataset=content_hash[:12],
+                    )
+                    st.session_state.raw_df = df_loaded
+                    st.session_state.upload_truncated = was_truncated
+                    st.session_state.upload_max_rows = max_rows
+                    st.session_state.data_source = "upload"
+                    st.session_state.data_signature = f"{content_hash}_{is_premium}_{selected_sheet}_{selected_header}"
+                    st.session_state.dataset_fingerprint = content_hash
+                    st.rerun()
+                except ValueError as error:
+                    st.error(f"Datei konnte nicht verarbeitet werden: {error}")
+                    _log_event("UPLOAD_REJECTED", logging.WARNING, error_type=safe_exception_name(error))
+            return
     elif st.session_state.last_upload_signature is not None:
         if st.session_state.data_source == "upload":
             st.session_state.raw_df = None
             _reset_data_caches()
             st.session_state.data_source = None
             st.session_state.data_signature = None
+            st.session_state.dataset_fingerprint = None
             st.session_state.column_mapping = {}
             _reset_analysis_outputs()
             _reset_filters()
+        _reset_import_review()
         st.session_state.last_upload_signature = None
 
     # --- Empty State ---
@@ -777,6 +1024,11 @@ def main() -> None:
         return
 
     df_raw = st.session_state.raw_df
+    if st.session_state.upload_truncated:
+        st.warning(
+            f"Zeilenlimit erreicht: Es werden maximal "
+            f"{format_de_number(st.session_state.upload_max_rows, 0)} Zeilen verarbeitet."
+        )
     data_key = st.session_state.data_signature or f"session-{id(df_raw)}"
 
     if st.session_state.pii_cache_key != data_key or st.session_state.pii_scan_cache is None:
@@ -1087,7 +1339,11 @@ def main() -> None:
     # --- AI Insights ---
     insight_key = _compute_insight_key(kpis, effective_target, niche, is_premium)
     ist_veraltet = st.session_state.ai_insights is not None and st.session_state.ai_insights_key != insight_key
-    report_context = (insight_key, st.session_state.ai_insights_key if not ist_veraltet else None)
+    report_context = (
+        insight_key,
+        st.session_state.ai_insights_key if not ist_veraltet else None,
+        _report_presentation_key(),
+    )
     if st.session_state.pdf_bytes and st.session_state.pdf_context_key != report_context:
         st.session_state.pdf_bytes = None
         st.session_state.pdf_filename = None
@@ -1187,7 +1443,9 @@ def main() -> None:
 
     if st.session_state.ai_insights:
         ai = st.session_state.ai_insights
-        source_label = "Gemini" if st.session_state.ai_insights_source == "gemini" else "Lokale KPI-Analyse"
+        source_label = {
+            "gemini": "Gemini", "edited": "Vom Berater bearbeitet", "local": "Lokale KPI-Analyse",
+        }.get(st.session_state.ai_insights_source, "Lokale KPI-Analyse")
         st.caption(f"Quelle: {source_label}. Es wurden keine Rohzeilen an Gemini übertragen.")
         status_kind = "risk" if (effective_target is not None and not marge_ist_nan and kpis["aktuelle_marge"] < effective_target) else "recommend"
         st.markdown(
@@ -1221,6 +1479,125 @@ def main() -> None:
             st.write(evidence)
             st.caption("An Gemini wurden nur diese aggregierten Kennzahlen übertragen, keine Rohzeilen.")
 
+        with st.expander("Einordnung für den Bericht bearbeiten", expanded=False):
+            with st.form("insight_editor_form"):
+                edited_summary = st.text_area(
+                    "Executive Summary", value=ai.get("zusammenfassung", ""), max_chars=2_000,
+                )
+                edited_meaning = st.text_area(
+                    "Bedeutung", value=ai.get("ziel_analyse", ""), max_chars=2_000,
+                )
+                edited_actions = st.text_area(
+                    "Handlungsoptionen (eine pro Zeile)",
+                    value="\n".join(ai.get("action_plan", [])), max_chars=4_000,
+                )
+                consultant_comment = st.text_area(
+                    "Beraterkommentar", value=st.session_state.consultant_comment, max_chars=2_000,
+                )
+                if st.form_submit_button("Berichtsinhalte übernehmen", width="stretch"):
+                    st.session_state.ai_insights = {
+                        **ai,
+                        "zusammenfassung": edited_summary.strip(),
+                        "ziel_analyse": edited_meaning.strip(),
+                        "action_plan": [line.strip() for line in edited_actions.splitlines() if line.strip()],
+                        "status": "bearbeitet",
+                    }
+                    st.session_state.ai_insights_source = "edited"
+                    st.session_state.consultant_comment = consultant_comment.strip()
+                    st.session_state.pdf_bytes = None
+                    st.session_state.pdf_context_key = None
+                    st.success("Berichtsinhalte aktualisiert.")
+
+    if consulting_store is not None and selected_client is not None:
+        _section_header("Mandantenhistorie", f"Aggregierte Analyseverläufe für {selected_client.name}.")
+        try:
+            history = _consulting_history(
+                database_url,
+                billing_identity.user_id,
+                selected_client.client_id,
+                st.session_state.consulting_cache_version,
+            )
+            if history:
+                latest = history[0]
+                st.caption(
+                    f"{len(history)} gespeicherte Analyseperioden · zuletzt "
+                    f"{format_de_date(latest.period_start)} bis {format_de_date(latest.period_end)}"
+                )
+                today = datetime.date.today()
+                current_period_start = _as_date(kpis.get("date_range", {}).get("start"), today)
+                current_period_end = _as_date(kpis.get("date_range", {}).get("end"), today)
+                best = find_best_comparison(
+                    AnalysisSnapshot(
+                        analysis_id="current", owner_user_id=billing_identity.user_id,
+                        client_id=selected_client.client_id,
+                        dataset_hash=st.session_state.dataset_fingerprint or "0" * 64,
+                        period_start=current_period_start,
+                        period_end=current_period_end,
+                        mapping={}, result=aggregate_result(kpis), quality_status=data_quality["level"],
+                    ),
+                    history,
+                )
+                if best:
+                    label, previous = best
+                    current_snapshot = AnalysisSnapshot(
+                        analysis_id="current", owner_user_id=billing_identity.user_id,
+                        client_id=selected_client.client_id,
+                        dataset_hash=st.session_state.dataset_fingerprint or "0" * 64,
+                        period_start=current_period_start,
+                        period_end=current_period_end,
+                        mapping={}, result=aggregate_result(kpis), quality_status=data_quality["level"],
+                    )
+                    change = compare_snapshots(current_snapshot, previous)
+                    revenue_change = change.get("revenue_change_pct")
+                    margin_change = change.get("margin_change_pp")
+                    _card(
+                        f'<div class="dd-eyebrow">{escape_html(label)} VERGLEICH</div>'
+                        f'<b>Umsatz {"—" if revenue_change is None else f"{revenue_change:+.1f} %"}</b><br>'
+                        f'<span class="dd-muted">Marge {"—" if margin_change is None else f"{margin_change:+.1f} Prozentpunkte"}</span>'
+                    )
+                for trend in detect_trends(history):
+                    st.caption(f"{trend['label']}: drei Perioden in Folge {trend['direction']}.")
+
+            date_start = kpis.get("date_range", {}).get("start")
+            date_end = kpis.get("date_range", {}).get("end")
+            default_start = _as_date(date_start, datetime.date.today().replace(day=1))
+            default_end = _as_date(date_end, datetime.date.today())
+            with st.form("save_analysis_form"):
+                pc1, pc2 = st.columns(2)
+                with pc1:
+                    period_start = st.date_input("Zeitraum von", value=default_start)
+                with pc2:
+                    period_end = st.date_input("Zeitraum bis", value=default_end)
+                if st.form_submit_button("Analyse beim Mandanten speichern", width="stretch"):
+                    current_ai = st.session_state.ai_insights or {}
+                    snapshot = AnalysisSnapshot(
+                        analysis_id=str(uuid.uuid4()), owner_user_id=billing_identity.user_id,
+                        client_id=selected_client.client_id,
+                        dataset_hash=st.session_state.dataset_fingerprint or hashlib.sha256(
+                            repr(aggregate_result(kpis)).encode("utf-8")
+                        ).hexdigest(),
+                        period_start=period_start, period_end=period_end,
+                        mapping=kpis.get("column_mapping", {}), result=aggregate_result(kpis),
+                        quality_status=data_quality["level"],
+                        insights=[
+                            {"text": item, "status": current_ai.get("status", "KI erzeugt")}
+                            for item in current_ai.get("action_plan", [])
+                        ],
+                        executive_summary=current_ai.get("zusammenfassung", ""),
+                        consultant_comment=st.session_state.consultant_comment,
+                        analysis_version=APP_VERSION,
+                    )
+                    saved_snapshot = consulting_store.save_analysis(snapshot)
+                    st.session_state.saved_analysis_id = saved_snapshot.analysis_id
+                    st.session_state.saved_analysis_client_id = saved_snapshot.client_id
+                    st.session_state.consulting_cache_version += 1
+                    st.success("Analyse ohne Rohdatei in der Mandantenhistorie gespeichert.")
+        except (ValueError, PermissionError) as error:
+            st.warning(str(error))
+        except Exception as error:
+            _log_event("CONSULTING_HISTORY_ERROR", logging.ERROR, error_type=safe_exception_name(error))
+            st.warning("Mandantenhistorie ist momentan nicht erreichbar. Die aktuelle Analyse bleibt verfügbar.")
+
     # --- Daten ---
     _section_header("Detaildaten", "Maskierte Vorschau der ersten 100 gefilterten Datensätze.")
     st.markdown(_data_preview_table(df_filtered), unsafe_allow_html=True)
@@ -1232,6 +1609,47 @@ def main() -> None:
     if not is_premium:
         st.info("PDF-Reports sind in dieser Demo hinter dem Premium-Schalter. Aktivieren Sie links **Demo: Premium-Funktionen**, um den Export zu testen.")
     else:
+        with st.expander("Report konfigurieren", expanded=False):
+            settings = st.session_state.report_settings
+            with st.form("report_settings_form"):
+                rs1, rs2 = st.columns(2)
+                with rs1:
+                    company_name = st.text_input("Beratungsunternehmen", value=settings.get("company_name", ""))
+                    accent_color = st.text_input("Akzentfarbe (Hex)", value=settings.get("accent_color", "#4F46E5"))
+                    contact_name = st.text_input("Ansprechpartner", value=settings.get("contact_name", ""))
+                with rs2:
+                    contact_email = st.text_input("Kontakt-E-Mail", value=settings.get("contact_email", ""))
+                    footer_text = st.text_input("Fußzeile", value=settings.get("footer_text", ""))
+                show_summary = st.checkbox("Executive Summary", value=settings.get("show_summary", True))
+                show_ai_insights = st.checkbox("KI-Insights", value=settings.get("show_ai_insights", True))
+                show_kpis = st.checkbox("Kennzahlen", value=settings.get("show_kpis", True))
+                show_segments = st.checkbox("Segmente", value=settings.get("show_segments", True))
+                show_time_series = st.checkbox("Zeitentwicklung", value=settings.get("show_time_series", True))
+                show_methodology = st.checkbox("Methodik", value=settings.get("show_methodology", True))
+                if st.form_submit_button("Report-Einstellungen speichern", width="stretch"):
+                    st.session_state.report_settings = {
+                        "company_name": company_name, "accent_color": accent_color,
+                        "contact_name": contact_name, "contact_email": contact_email,
+                        "footer_text": footer_text, "show_summary": show_summary,
+                        "show_ai_insights": show_ai_insights, "show_kpis": show_kpis,
+                        "show_segments": show_segments, "show_time_series": show_time_series,
+                        "show_methodology": show_methodology,
+                    }
+                    st.session_state.pdf_bytes = None
+                    st.session_state.pdf_context_key = None
+                    st.success("Report-Einstellungen gespeichert.")
+            logo_file = st.file_uploader(
+                "Logo (PNG oder JPEG, maximal 1 MB)", type=["png", "jpg", "jpeg"], key="report_logo_upload",
+            )
+            if logo_file is not None:
+                logo_content = logo_file.getvalue()
+                if len(logo_content) <= 1_000_000:
+                    if st.session_state.report_logo_bytes != logo_content:
+                        st.session_state.report_logo_bytes = logo_content
+                        st.session_state.pdf_bytes = None
+                        st.session_state.pdf_context_key = None
+                else:
+                    st.error("Logo darf maximal 1 MB groß sein.")
         pdf_clicked = st.button(
             "PDF-Report erstellen",
             key="generate_pdf_btn",
@@ -1255,15 +1673,43 @@ def main() -> None:
                 _log_event("PDF_STARTED")
                 try:
                     current_ai = None if ist_veraltet else st.session_state.ai_insights
+                    report_version = st.session_state.report_version
+                    can_version_report = (
+                        consulting_store is not None
+                        and selected_client is not None
+                        and st.session_state.saved_analysis_id is not None
+                        and st.session_state.saved_analysis_client_id == selected_client.client_id
+                    )
+                    if can_version_report:
+                        report_version = consulting_store.next_report_version(
+                            billing_identity.user_id,
+                            selected_client.client_id,
+                            st.session_state.saved_analysis_id,
+                        )
                     st.session_state.pdf_bytes = generate_pdf(
                         kpis,
                         current_ai,
                         niche,
                         revenue_only=st.session_state.revenue_only_mode,
                         data_quality=data_quality,
+                        report_settings=st.session_state.report_settings,
+                        consultant_comment=st.session_state.consultant_comment,
+                        report_version=report_version,
+                        logo_bytes=st.session_state.report_logo_bytes,
+                        client_name=selected_client.name if selected_client is not None else "",
+                        period_label=_report_period_label(kpis),
                     )
                     st.session_state.pdf_filename = f"DataDeck_Analyse_{datetime.date.today():%Y-%m}.pdf"
                     st.session_state.pdf_context_key = report_context
+                    if can_version_report:
+                        report_metadata = consulting_store.save_report_metadata(
+                            billing_identity.user_id,
+                            selected_client.client_id,
+                            st.session_state.saved_analysis_id,
+                            st.session_state.report_settings,
+                            hashlib.sha256(st.session_state.pdf_bytes).hexdigest(),
+                        )
+                        st.session_state.report_version = report_metadata.report_version + 1
                     _log_event(
                         "PDF_SUCCESS", bytes=len(st.session_state.pdf_bytes),
                         duration_ms=round((time.perf_counter() - pdf_started) * 1000),

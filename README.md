@@ -24,12 +24,14 @@ work/.venv/bin/pip check
 ```
 
 `qa_all.py` umfasst Kernlogik, UI-Formatierung, Runtime-Flows, Security,
-Produktionskonfiguration, Golden Datasets und das deaktivierte Stripe-Testbilling.
+Produktionskonfiguration, 50+ Golden Datasets, Importadapter,
+Mandanten-Isolation und das deaktivierte Stripe-Testbilling.
 
 ## Architektur
 
 - `main.py`: UI, Session State und Ablaufsteuerung
 - `core/data_processing.py`: Upload-Prüfung, Import, Mapping, Bereinigung
+- `core/import_adapters.py`: formatneutrale Importgrenze für CSV/XLSX
 - `core/analysis.py`: zentrale KPI- und Zeitvergleichslogik
 - `core/formatting.py`: deutsche Zahlen-, Kurz- und Datumsformatierung
 - `core/security.py`: PII-Erkennung, Maskierung und Prompt-Bereinigung
@@ -39,6 +41,24 @@ Produktionskonfiguration, Golden Datasets und das deaktivierte Stripe-Testbillin
 - `core/theme.py`: Light-/Dark-Designsystem
 - `billing/`: persistenter Billing-Status, Stripe-Checkout, Portal und Entitlements
 - `billing_service.py`: unabhängiger, signaturgeprüfter Stripe-Webhook-Endpunkt
+- `consulting/`: owner-sichere Mandanten, Analysehistorie, Vergleiche und Report-Versionen
+
+## Mandantenhistorie
+
+Die Schnellanalyse bleibt ohne Datenbank verfügbar. Mit einer PostgreSQL-
+`DATABASE_URL` kann ein Berater Analysen einem Mandanten zuordnen. Persistiert
+werden ausschließlich Mapping, Zeitraum, Dataset-Fingerprint, aggregierte
+Kennzahlen, freigegebene Insight-Texte und Report-Metadaten. Upload-Dateien und
+Rohzeilen werden nicht gespeichert.
+
+Vor Aktivierung einmal die versionierten Migrationen ausführen:
+
+```bash
+python -m billing.migrate
+```
+
+Details zu Datenschutz, Isolation und Betrieb stehen in
+`CONSULTING_HISTORY.md`.
 
 Produktionsbetrieb, Sicherheitsgrenzen und der Beta-Ablauf sind in
 `DEPLOYMENT.md`, `PRODUCTION_RUNBOOK.md`, `SECURITY_NOTES.md` und

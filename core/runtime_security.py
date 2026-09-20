@@ -9,13 +9,14 @@ import uuid
 from collections.abc import MutableMapping
 
 
-APP_VERSION = "0.8.0-beta"
+APP_VERSION = "0.9.0-beta"
 VALID_ENVIRONMENTS = {"development", "testing", "production"}
 SENSITIVE_SESSION_KEYS = {
     "raw_df",
     "data_source",
     "data_signature",
     "last_upload_signature",
+    "pending_upload_hash",
     "column_mapping",
     "ai_insights",
     "ai_insights_key",
@@ -46,6 +47,18 @@ SENSITIVE_SESSION_KEYS = {
     "prepared_quality_cache",
     "kpi_cache_key",
     "kpi_cache",
+    "import_review_signature",
+    "import_inspection",
+    "upload_truncated",
+    "upload_max_rows",
+    "consultant_comment",
+    "report_settings",
+    "report_logo_bytes",
+    "report_version",
+    "dataset_fingerprint",
+    "consulting_cache_version",
+    "saved_analysis_id",
+    "saved_analysis_client_id",
 }
 
 
