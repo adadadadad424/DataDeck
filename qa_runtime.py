@@ -121,6 +121,9 @@ def main():
         app.file_uploader(key="file_uploader").clear().run()
         assert_ok(app)
         assert app.session_state["raw_df"] is None
+        assert app.session_state["prepared_df_cache"] is None
+        assert app.session_state["pii_scan_cache"] is None
+        assert app.session_state["kpi_cache"] is None
         print("Runtime QA: Demo, CSV, Revenue-only, XLSX, Filter, Theme, no-key AI, stale AI and real PDF PASS")
     finally:
         if env_backup.exists():

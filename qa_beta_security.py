@@ -61,6 +61,9 @@ class BetaSecurityTests(unittest.TestCase):
             "ai_insights": {"secret": "x"},
             "pdf_bytes": b"private",
             "column_mapping": {"umsatz": "secret"},
+            "prepared_df_cache": pd.DataFrame({"derived_secret": [1]}),
+            "pii_scan_cache": {"spalten_mit_treffern": ["secret"]},
+            "kpi_cache": {"gesamt_umsatz": 1},
             "theme": "dark",
         }
         clear_sensitive_session(state)

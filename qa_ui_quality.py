@@ -4,7 +4,7 @@ import datetime
 import unittest
 
 from core.formatting import format_compact_number, format_de_date, format_de_number
-from main import _mapping_requires_review
+from main import _mapping_requires_review, _stable_mapping_key
 
 
 class UIQualityTests(unittest.TestCase):
@@ -49,6 +49,11 @@ class UIQualityTests(unittest.TestCase):
             }
         }
         self.assertTrue(_mapping_requires_review(warnings))
+
+    def test_mapping_cache_key_is_order_independent(self):
+        first = {"umsatz": "Revenue", "gewinn": "Profit"}
+        second = {"gewinn": "Profit", "umsatz": "Revenue"}
+        self.assertEqual(_stable_mapping_key(first), _stable_mapping_key(second))
 
 
 if __name__ == "__main__":

@@ -126,6 +126,14 @@ def _init_session_state() -> None:
         "auth_denied_logged": False,
         "billing_checkout_url": None,
         "billing_return_synced": False,
+        "pii_cache_key": None,
+        "pii_scan_cache": None,
+        "prepared_cache_key": None,
+        "prepared_df_cache": None,
+        "prepared_warnings_cache": None,
+        "prepared_quality_cache": None,
+        "kpi_cache_key": None,
+        "kpi_cache": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -402,6 +410,16 @@ def _reset_analysis_outputs() -> None:
     st.session_state.pdf_context_key = None
 
 
+def _reset_data_caches() -> None:
+    """Remove cached derivatives whenever the active dataset is replaced."""
+    for key in (
+        "pii_cache_key", "pii_scan_cache", "prepared_cache_key",
+        "prepared_df_cache", "prepared_warnings_cache", "prepared_quality_cache",
+        "kpi_cache_key", "kpi_cache",
+    ):
+        st.session_state[key] = None
+
+
 def _effective_column_mapping() -> dict | None:
     mapping = st.session_state.get("column_mapping") or {}
     normalized = {}
@@ -412,6 +430,11 @@ def _effective_column_mapping() -> dict | None:
             continue
         normalized[key] = value
     return normalized or None
+
+
+def _stable_mapping_key(mapping: dict | None) -> tuple[tuple[str, str], ...]:
+    """Create a deterministic, hashable key for one column mapping."""
+    return tuple(sorted((str(key), str(value)) for key, value in (mapping or {}).items()))
 
 
 def _mapping_option_label(value) -> str:
@@ -650,6 +673,7 @@ def main() -> None:
 
         if st.button("Demo-Daten laden", key="demo_btn", width="stretch"):
             _reset_filters()
+            _reset_data_caches()
             st.session_state.raw_df = pd.DataFrame(DEMO_DATA)
             st.session_state.data_source = "demo"
             st.session_state.data_signature = f"demo_{is_premium}"
@@ -696,6 +720,7 @@ def main() -> None:
                         f"maximal {max_rows:,} Zeilen verarbeitet."
                     )
                 st.session_state.raw_df = df_loaded
+                _reset_data_caches()
                 _reset_filters()
                 st.session_state.data_source = "upload"
                 st.session_state.data_signature = f"{content_hash}_{is_premium}"
@@ -705,14 +730,17 @@ def main() -> None:
                 st.error(f"Datei konnte nicht verarbeitet werden: {e}")
                 _log_event("UPLOAD_REJECTED", logging.WARNING, error_type=safe_exception_name(e))
                 st.session_state.raw_df = None
+                _reset_data_caches()
             except Exception as e:
                 _show_unexpected_error("upload")
                 _log_event("UPLOAD_ERROR", logging.ERROR, error_type=safe_exception_name(e))
                 st.session_state.raw_df = None
+                _reset_data_caches()
             st.session_state.last_upload_signature = signature
     elif st.session_state.last_upload_signature is not None:
         if st.session_state.data_source == "upload":
             st.session_state.raw_df = None
+            _reset_data_caches()
             st.session_state.data_source = None
             st.session_state.data_signature = None
             st.session_state.column_mapping = {}
@@ -749,32 +777,56 @@ def main() -> None:
         return
 
     df_raw = st.session_state.raw_df
-    pii_scan = scan_dataframe_for_pii(df_raw)
+    data_key = st.session_state.data_signature or f"session-{id(df_raw)}"
 
-    clean_started = time.perf_counter()
-    try:
-        df_clean, warnings = clean_and_prepare_data(df_raw, _effective_column_mapping())
-        new_revenue_only_mode = bool(warnings.get("revenue_only_mode"))
-        revenue_mode_changed = st.session_state.revenue_only_mode != new_revenue_only_mode
-        st.session_state.revenue_only_mode = new_revenue_only_mode
-        data_quality = assess_data_quality(df_raw, df_clean, warnings)
-        _log_event(
-            "DATA_PREPARED", rows=len(df_clean), columns=len(df_clean.columns),
-            mapping=";".join(
-                f"{key}:{value}"
-                for key, value in sorted(warnings.get("mapping_confidence", {}).items())
-            ),
-            duration_ms=round((time.perf_counter() - clean_started) * 1000),
-        )
-    except ValueError as e:
-        st.error(f"Daten konnten nicht aufbereitet werden: {e}")
-        _log_event("DATA_PREPARATION_REJECTED", logging.WARNING, error_type=safe_exception_name(e))
-        return
+    if st.session_state.pii_cache_key != data_key or st.session_state.pii_scan_cache is None:
+        st.session_state.pii_scan_cache = scan_dataframe_for_pii(df_raw)
+        st.session_state.pii_cache_key = data_key
+    pii_scan = st.session_state.pii_scan_cache
 
-    except Exception as e:
-        _show_unexpected_error("data_preparation")
-        _log_event("DATA_PREPARATION_ERROR", logging.ERROR, error_type=safe_exception_name(e))
-        return
+    effective_mapping = _effective_column_mapping()
+    prepared_key = (data_key, _stable_mapping_key(effective_mapping))
+    prepared_cache_valid = (
+        st.session_state.prepared_cache_key == prepared_key
+        and st.session_state.prepared_df_cache is not None
+        and st.session_state.prepared_warnings_cache is not None
+        and st.session_state.prepared_quality_cache is not None
+    )
+    revenue_mode_changed = False
+    if prepared_cache_valid:
+        df_clean = st.session_state.prepared_df_cache
+        warnings = st.session_state.prepared_warnings_cache
+        data_quality = st.session_state.prepared_quality_cache
+    else:
+        clean_started = time.perf_counter()
+        try:
+            df_clean, warnings = clean_and_prepare_data(df_raw, effective_mapping)
+            new_revenue_only_mode = bool(warnings.get("revenue_only_mode"))
+            revenue_mode_changed = st.session_state.revenue_only_mode != new_revenue_only_mode
+            st.session_state.revenue_only_mode = new_revenue_only_mode
+            data_quality = assess_data_quality(df_raw, df_clean, warnings)
+            st.session_state.prepared_cache_key = prepared_key
+            st.session_state.prepared_df_cache = df_clean
+            st.session_state.prepared_warnings_cache = warnings
+            st.session_state.prepared_quality_cache = data_quality
+            st.session_state.kpi_cache_key = None
+            st.session_state.kpi_cache = None
+            _log_event(
+                "DATA_PREPARED", rows=len(df_clean), columns=len(df_clean.columns),
+                mapping=";".join(
+                    f"{key}:{value}"
+                    for key, value in sorted(warnings.get("mapping_confidence", {}).items())
+                ),
+                duration_ms=round((time.perf_counter() - clean_started) * 1000),
+            )
+        except ValueError as e:
+            st.error(f"Daten konnten nicht aufbereitet werden: {e}")
+            _log_event("DATA_PREPARATION_REJECTED", logging.WARNING, error_type=safe_exception_name(e))
+            return
+        except Exception as e:
+            _show_unexpected_error("data_preparation")
+            _log_event("DATA_PREPARATION_ERROR", logging.ERROR, error_type=safe_exception_name(e))
+            return
 
     if revenue_mode_changed:
         st.rerun()
@@ -897,14 +949,25 @@ def main() -> None:
         st.warning("Keine Daten entsprechen den aktuellen Filtereinstellungen. Bitte Filter anpassen.")
         return
 
-    analysis_started = time.perf_counter()
     analysis_context = {**warnings, "data_quality": data_quality}
-    kpis = calculate_kpis(df_filtered, analysis_context)
-    _log_event(
-        "ANALYSIS_COMPLETED", rows=kpis["anzahl_zeilen"],
-        categories=kpis["anzahl_kategorien"],
-        duration_ms=round((time.perf_counter() - analysis_started) * 1000),
+    kpi_key = (
+        prepared_key,
+        float(min_gewinn),
+        float(min_marge),
+        suchbegriff.strip().casefold(),
     )
+    if st.session_state.kpi_cache_key == kpi_key and st.session_state.kpi_cache is not None:
+        kpis = st.session_state.kpi_cache
+    else:
+        analysis_started = time.perf_counter()
+        kpis = calculate_kpis(df_filtered, analysis_context)
+        st.session_state.kpi_cache_key = kpi_key
+        st.session_state.kpi_cache = kpis
+        _log_event(
+            "ANALYSIS_COMPLETED", rows=kpis["anzahl_zeilen"],
+            categories=kpis["anzahl_kategorien"],
+            duration_ms=round((time.perf_counter() - analysis_started) * 1000),
+        )
     financial_available = kpis.get("financial_aggregation_available", True)
     effective_target = ziel_marge if kpis["profit_available"] and financial_available else None
 

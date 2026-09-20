@@ -38,6 +38,14 @@ SENSITIVE_SESSION_KEYS = {
     "auth_denied_logged",
     "billing_checkout_url",
     "billing_return_synced",
+    "pii_cache_key",
+    "pii_scan_cache",
+    "prepared_cache_key",
+    "prepared_df_cache",
+    "prepared_warnings_cache",
+    "prepared_quality_cache",
+    "kpi_cache_key",
+    "kpi_cache",
 }
 
 
