@@ -1,6 +1,6 @@
 # DataDeck Security Notes
 
-Stand: 19.09.2026, Version 0.8.0-beta.
+Stand: 20.09.2026, Version 0.8.0-beta.
 
 ## Datenfluss
 
@@ -95,6 +95,16 @@ Logs enthalten Ereignistyp, zufällige Korrelations-ID, anonymisierte Nutzer-ID,
 Dataset-Hash-Präfix, Mengen, Laufzeiten und Exception-Klasse. Dateinamen, Rohdaten,
 Prompt-Inhalte, E-Mail-Adressen und API-Fehlertexte werden nicht protokolliert.
 Unerwartete UI-Fehler zeigen nur eine Korrelations-ID.
+
+## Secret-Status
+
+Der aktive Gemini-Produktionsschlüssel ist an ein eigenes Dienstkonto gebunden, auf die
+Gemini API beschränkt und ausschließlich als geschütztes Render-Secret hinterlegt. Der
+zuvor im Chat offengelegte Schlüssel stammt aus dem Google-Projekt `1067062801521`, auf
+das das aktuelle Konto keinen ausreichenden Zugriff besitzt. Er gilt bis zum Widerruf
+durch ein berechtigtes Konto weiterhin als kompromittiert und darf nicht verwendet werden.
+Schlüsselwerte werden weder in dieser Dokumentation noch in Logs oder Release-Artefakten
+gespeichert.
 
 ## Bekannte Grenzen
 

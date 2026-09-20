@@ -28,7 +28,9 @@
 - [ ] Verwaltetes HTTPS aktiv; zusätzliche Reverse-Proxy-Sicherheitsheader prüfen
 - [ ] OIDC-Provider und erlaubten Redirect live geprüft; Deny, Logout und Session-Ablauf offen
 - [ ] Nur echte Beta-E-Mails in `BETA_APPROVED_USERS` freigeben
-- [ ] Gemini-Schlüssel rotieren, beschränken und Budget-/Quota-Alarm setzen (Google-Konto blockiert derzeit die Schlüsselerstellung)
+- [x] Neuen Gemini-Produktionsschlüssel an eigenes Dienstkonto binden, auf Gemini beschränken und live in Render validieren
+- [ ] Zuvor offengelegten Gemini-Schlüssel im nicht zugänglichen Projekt `1067062801521` durch ein berechtigtes Konto widerrufen
+- [ ] Gemini-Quota-Alarm ohne Aktivierung eines kostenpflichtigen Tarifs einrichten
 - [ ] Datenschutzerklärung, Impressum und Nutzungsbedingungen rechtlich freigeben
 - [ ] Google-Datenverarbeitung, DPA, Retention und Region dokumentieren
 - [ ] Dauerhaften Support- und Feedbackkanal benennen

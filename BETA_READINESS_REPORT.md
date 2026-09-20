@@ -1,6 +1,6 @@
 # DataDeck Closed-Beta Readiness
 
-Stand: 19.09.2026
+Stand: 20.09.2026
 
 ## Ergebnis
 
@@ -9,7 +9,7 @@ geschlossen sind. Die Kernanwendung selbst ist stabil und lokal vollständig gr�
 
 ## Verifizierte Evidenz
 
-- Render-Deployment `4992d17` ist live auf dem kostenlosen Frankfurt-Service.
+- Render-Deployment `09df910` ist live auf dem kostenlosen Frankfurt-Service.
 - `/_stcore/health` antwortete mit HTTP 200 in 0,17 Sekunden bei warmer Instanz.
 - Live-OIDC leitete zu Google, forderte nur `openid`, `email` und `profile` an und
   brachte das freigegebene Konto zurück ins DataDeck-Dashboard.
@@ -22,15 +22,20 @@ geschlossen sind. Die Kernanwendung selbst ist stabil und lokal vollständig gr�
 - Arbeitsbaum, gesamte Git-Historie und drei lokale Release-ZIPs enthielten kein
   erkanntes Gemini-Key-Muster. Die lokale `.env`, der Shell-Export und die persistente
   Launch-Variable wurden entfernt.
-- Vollständige QA: 93/93 Core, 7/7 Production, 16/16 Security, 5/5 Golden-Datasets,
+- Ein neuer, ausschließlich für die Gemini API freigegebener Produktionsschlüssel ist
+  an das Dienstkonto `datadeck-gemini@datadeck-beta.iam.gserviceaccount.com` gebunden,
+  in Render hinterlegt und live mit `AI_PROVIDER_SUCCESS` validiert. Gemini erhielt dabei
+  weiterhin ausschließlich aggregierte Kennzahlen und keine Rohzeilen.
+- Vollständige QA: 94/94 Core, 7/7 Production, 16/16 Security, 5/5 Golden-Datasets,
   Syntaxcheck und kompletter Streamlit-Runtime-Flow bestanden.
 
 ## MUST FIX
 
-1. **Gemini-Key rotieren.** Die Gemini API ist im Projekt `datadeck-beta` aktiviert,
-   aber Google verweigert dem aktuellen Konto sowohl AI-Studio-Schlüsselerstellung als
-   auch das erforderliche Dienstkonto. Der bisherige Render-Key ist deshalb noch aktiv
-   und darf nicht für externe Tests weiterverwendet werden.
+1. **Alten Gemini-Key widerrufen.** Der neue eingeschränkte Produktionsschlüssel ist live.
+   Der zuvor im Chat offengelegte Schlüssel gehört jedoch zum nicht zugänglichen Google-
+   Projekt `1067062801521`. Dem aktuellen Konto fehlt dort bereits
+   `resourcemanager.projects.get`; der alte Schlüssel konnte deshalb nicht widerrufen
+   werden und bleibt bis zur Löschung durch ein berechtigtes Konto ein Sicherheitsrest.
 2. **OIDC-Abnahme vervollständigen.** Ein nicht erlaubtes Konto, Logout, Session-Cleanup,
    Browser-Zurück und die finalen Cookie-Attribute müssen live geprüft werden.
 3. **Echte Zwei-Nutzer-Isolation auf Production.** Zwei getrennte erlaubte Google-Konten
@@ -61,7 +66,7 @@ geschlossen sind. Die Kernanwendung selbst ist stabil und lokal vollständig gr�
 
 | Kriterium | Status | Evidenz / Blocker |
 |---|---|---|
-| Gemini-Key rotiert | ROT | Google-Konto blockiert neue Schlüsselerstellung; alter Render-Key noch aktiv |
+| Gemini-Key rotiert | ROT | neuer eingeschränkter Render-Key live und geprüft; offengelegter Alt-Key im unzugänglichen Projekt `1067062801521` noch nicht widerrufen |
 | OIDC End-to-End | GELB | erlaubter Nutzer und Redirect erfolgreich; Deny/Logout/Cookies offen |
 | Allowlist | GRUEN | freigegebenes Konto erreicht Dashboard; Fail-closed-Tests bestehen |
 | Logout / Session Cleanup | GELB | automatisiert bestanden, live noch offen |
