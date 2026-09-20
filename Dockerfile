@@ -25,6 +25,7 @@ RUN python -m pip install --requirement requirements.txt
 COPY --chown=datadeck:datadeck main.py ./
 COPY --chown=datadeck:datadeck production_start.py ./
 COPY --chown=datadeck:datadeck core ./core
+COPY --chown=datadeck:datadeck billing ./billing
 COPY --chown=datadeck:datadeck .streamlit/config.toml ./.streamlit/config.toml
 
 USER datadeck

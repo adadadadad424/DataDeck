@@ -37,6 +37,24 @@ class ProductionTests(unittest.TestCase):
     def test_valid_configuration_passes(self):
         self.assertEqual(validate_production_environment(valid_environment()), [])
 
+    def test_enabled_billing_requires_complete_matching_test_configuration(self):
+        env = valid_environment()
+        env["BILLING_ENABLED"] = "true"
+        errors = validate_production_environment(env)
+        self.assertTrue(any("Billing configuration invalid" in error for error in errors))
+
+        env.update(
+            {
+                "STRIPE_MODE": "test",
+                "DATABASE_URL": "postgresql://billing.example.org/datadeck",
+                "STRIPE_SECRET_KEY": "sk_live_wrong_mode",
+                "STRIPE_PRICE_PRO_MONTHLY": "price_monthly",
+                "APP_BASE_URL": "https://beta.example.org",
+            }
+        )
+        errors = validate_production_environment(env)
+        self.assertTrue(any("must match test mode" in error for error in errors))
+
     def test_http_and_bad_redirect_are_rejected(self):
         env = valid_environment()
         env["OIDC_REDIRECT_URI"] = "http://beta.example.org/callback"
@@ -58,9 +76,10 @@ class ProductionTests(unittest.TestCase):
         self.assertNotIn("client-secret", render + docker)
         self.assertIn("python\", \"production_start.py", docker)
 
-    def test_production_ui_has_no_premium_test_toggle(self):
+    def test_production_ui_uses_server_side_entitlement(self):
         source = Path("main.py").read_text(encoding="utf-8")
-        self.assertIn('if is_production:\n            is_premium = True', source)
+        self.assertIn("entitlement_for(billing_user).has_access", source)
+        self.assertIn("if is_production:", source)
 
     def test_closed_beta_has_honest_public_placeholder_pages(self):
         source = Path("main.py").read_text(encoding="utf-8")

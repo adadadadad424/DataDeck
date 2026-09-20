@@ -12,6 +12,10 @@ services:
         value: production
       - key: AUTH_REQUIRED
         value: "true"
+      - key: BILLING_ENABLED
+        value: "false"
+      - key: STRIPE_MODE
+        value: test
       - key: GEMINI_MODEL_NAME
         value: gemini-3.8-flash
       - key: MAX_UPLOAD_SIZE_MB

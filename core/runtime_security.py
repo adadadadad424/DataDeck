@@ -36,6 +36,8 @@ SENSITIVE_SESSION_KEYS = {
     "last_pdf_context",
     "auth_audit_subject",
     "auth_denied_logged",
+    "billing_checkout_url",
+    "billing_return_synced",
 }
 
 
@@ -79,6 +81,13 @@ def production_config_errors() -> list[str]:
         missing = [name for name in required if not os.getenv(name, "").strip()]
         if missing:
             errors.append("Fehlende Produktionskonfiguration: " + ", ".join(missing) + ".")
+        try:
+            from billing.config import BillingConfig, billing_enabled
+
+            if billing_enabled():
+                BillingConfig.from_env()
+        except ValueError as error:
+            errors.append("Billing-Konfiguration ungültig: " + str(error) + ".")
     return errors
 
 

@@ -15,12 +15,10 @@ vorherigen QA-Runde, 53/54 -> nach Bugfix 54/54 - siehe qa_test_final.py):
     core.report_builder      - PDF-Erstellung aus denselben Fakten
     core.theme               - zentrales Design-System (Light/Dark-Tokens)
 
-BEWUSST NICHT UMGESETZT in diesem Redesign (siehe Antworttext):
-echte Multi-Page-Navigation (App bleibt eine gefuehrte Einzelseiten-
-Ansicht - die geforderte Informationshierarchie wird durch Abschnitte
-statt echter Routen abgebildet), White-Label-Logo-Upload, Subscription-
-Billing, Seats-UI - das waeren aktuell UI-Attrappen ohne echte
-Backend-Funktion, was der eigenen "nichts erfinden"-Regel widerspraeche.
+Die App bleibt bewusst eine gefuehrte Einzelseiten-Ansicht. Stripe-Billing
+ist als standardmaessig deaktivierte, serverseitige Infrastruktur in
+billing/ vorbereitet; Aktivierung und Testbetrieb sind in BILLING.md
+dokumentiert. White-Label- und Seats-Funktionen sind nicht implementiert.
 """
 
 import datetime
@@ -34,6 +32,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
+
+from billing.config import BillingConfig, billing_enabled
+from billing.entitlements import entitlement_for
+from billing.models import Identity, stable_user_id
+from billing.service import BillingService
 
 from core.ai_insights import (
     AIConfigError,
@@ -120,6 +123,8 @@ def _init_session_state() -> None:
         "last_pdf_context": None,
         "auth_audit_subject": None,
         "auth_denied_logged": False,
+        "billing_checkout_url": None,
+        "billing_return_synced": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -221,7 +226,11 @@ def _auth_gate() -> dict | None:
 
     if not auth_required():
         st.session_state.user_id_hash = "local-dev"
-        return {"subject": "local-dev", "email": None}
+        return {
+            "subject": "local-dev",
+            "issuer": "https://local.datadeck.invalid",
+            "email": "local@datadeck.invalid",
+        }
 
     try:
         logged_in = bool(getattr(st.user, "is_logged_in", False))
@@ -267,7 +276,34 @@ def _auth_gate() -> dict | None:
         _log_event("LOGIN_SUCCESS")
         st.session_state.auth_audit_subject = st.session_state.user_id_hash
         st.session_state.auth_denied_logged = False
-    return {"subject": subject, "email": email}
+    issuer = claims.get("iss") or "https://accounts.google.com"
+    return {"subject": subject, "issuer": issuer, "email": email}
+
+
+def _billing_identity(auth_identity: dict) -> Identity:
+    issuer = str(auth_identity["issuer"])
+    subject = str(auth_identity["subject"])
+    email = str(auth_identity["email"])
+    return Identity(
+        user_id=stable_user_id(issuer, subject),
+        issuer=issuer,
+        subject=subject,
+        email=email,
+        beta_access=not auth_required() or is_approved_user(email),
+    )
+
+
+def _billing_status_label(status: str | None, cancel_at_period_end: bool) -> str:
+    if cancel_at_period_end and status in {"active", "trialing"}:
+        return "Kündigung vorgemerkt"
+    return {
+        "active": "Aktiv",
+        "trialing": "Testphase",
+        "past_due": "Zahlung überfällig",
+        "unpaid": "Zahlung fehlgeschlagen",
+        "incomplete": "Noch nicht abgeschlossen",
+        "canceled": "Beendet",
+    }.get(status, "Kein Abonnement")
 
 
 def _compute_insight_key(kpis: dict, ziel_marge: float | None, niche: str, is_premium: bool) -> str:
@@ -481,9 +517,24 @@ def main() -> None:
     _init_session_state()
     if _render_public_beta_page():
         return
-    if _auth_gate() is None:
+    auth_identity = _auth_gate()
+    if auth_identity is None:
         return
     is_production = app_environment() == "production"
+    billing_active = billing_enabled()
+    billing_identity = _billing_identity(auth_identity)
+    billing_service = None
+    billing_user = None
+    if billing_active:
+        try:
+            billing_service = BillingService(BillingConfig.from_env())
+            billing_user = billing_service.register_user(billing_identity)
+            billing_return = str(getattr(st, "query_params", {}).get("billing", ""))
+            if billing_return == "returned" and not st.session_state.billing_return_synced:
+                billing_user = billing_service.sync_user(billing_identity)
+                st.session_state.billing_return_synced = True
+        except Exception as error:
+            _log_event("BILLING_UNAVAILABLE", logging.ERROR, error_type=safe_exception_name(error))
     theme = get_theme(st.session_state.theme)  # Vorlaeufig fuer die Sidebar; nach dem Theme-Toggle unten neu berechnet.
 
     with st.sidebar:
@@ -509,12 +560,45 @@ def main() -> None:
         niche = st.selectbox("Branchen-Fokus", NISCHEN, key="niche_select", label_visibility="collapsed")
 
         if is_production:
-            is_premium = True
+            is_premium = entitlement_for(billing_user).has_access if billing_user else True
         else:
             is_premium = st.toggle(
                 "Demo: Premium-Funktionen", value=False, key="premium_toggle",
                 help="Aktiviert in dieser lokalen Demo höhere Limits und PDF-Export. Kein echtes Abo, keine Zahlung.",
             )
+
+        if billing_active:
+            st.markdown('<hr class="dd-divider" style="margin:14px 0;">', unsafe_allow_html=True)
+            st.caption("ACCOUNT & BILLING")
+            if billing_user is None or billing_service is None:
+                st.warning("Der Abrechnungsdienst ist momentan nicht erreichbar. Ihre Beta-Analyse bleibt verfügbar.")
+            else:
+                access = entitlement_for(billing_user)
+                st.markdown(f"**Aktueller Plan:** DataDeck {access.plan.title()}")
+                st.caption(_billing_status_label(billing_user.subscription_status, billing_user.cancel_at_period_end))
+                if billing_user.current_period_end and billing_user.cancel_at_period_end:
+                    st.caption(f"Zugriff bis {billing_user.current_period_end:%d.%m.%Y}")
+                if access.has_active_pro:
+                    try:
+                        if st.button("Abo verwalten", key="billing_portal_btn", width="stretch"):
+                            st.session_state.billing_checkout_url = billing_service.create_portal_url(billing_identity)
+                            _log_event("PORTAL_CREATED")
+                    except Exception as error:
+                        _log_event("PORTAL_ERROR", logging.ERROR, error_type=safe_exception_name(error))
+                        st.error("Der Abrechnungsdienst ist momentan nicht erreichbar.")
+                else:
+                    try:
+                        if st.button("DataDeck Pro abonnieren", key="billing_checkout_btn", width="stretch"):
+                            st.session_state.billing_checkout_url = billing_service.create_checkout_url(billing_identity)
+                            _log_event("CHECKOUT_CREATED")
+                    except Exception as error:
+                        _log_event("CHECKOUT_ERROR", logging.ERROR, error_type=safe_exception_name(error))
+                        st.error("Der Abrechnungsdienst ist momentan nicht erreichbar.")
+                if st.session_state.billing_checkout_url:
+                    st.link_button("Sicher zu Stripe", st.session_state.billing_checkout_url, width="stretch")
+                billing_return = str(getattr(st, "query_params", {}).get("billing", ""))
+                if billing_return == "confirming":
+                    st.info("Zahlung wird serverseitig bestätigt. Der Redirect allein schaltet Pro nicht frei.")
 
         st.caption("ZIEL-MARGE")
         target_disabled = bool(st.session_state.get("revenue_only_mode"))

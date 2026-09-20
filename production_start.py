@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
+from billing.config import BillingConfig, billing_enabled
+
 
 REQUIRED_PRODUCTION_ENV = (
     "BETA_APPROVED_USERS",
@@ -60,6 +62,11 @@ def validate_production_environment(environ: dict[str, str] | None = None) -> li
     redirect = env.get("OIDC_REDIRECT_URI", "").strip()
     if redirect and not redirect.rstrip("/").endswith("/oauth2callback"):
         errors.append("OIDC_REDIRECT_URI must end with /oauth2callback.")
+    if billing_enabled(env):
+        try:
+            BillingConfig.from_env(env)
+        except ValueError as error:
+            errors.append(f"Billing configuration invalid: {error}.")
     return errors
 
 

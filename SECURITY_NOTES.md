@@ -10,6 +10,9 @@ Stand: 20.09.2026, Version 0.8.0-beta.
 4. Bereinigte Daten und Ergebnisse liegen ausschließlich in `st.session_state` dieser Session.
 5. PDF-Reports entstehen als Bytes im Session State, nicht als gemeinsamer Dateipfad.
 6. Gemini erhält nur aggregierte KPIs und bereinigte Kategorienamen. Rohzeilen werden nicht übertragen.
+7. Nur wenn Billing ausdrücklich aktiviert wird, speichert PostgreSQL OIDC-Nutzerzuordnung,
+   E-Mail, technische Stripe-IDs, Abo-Status und verarbeitete Webhook-Event-IDs. Uploads,
+   Kennzahlen, KI-Inhalte und PDFs gelangen nicht in diese Datenbank.
 
 ## Isolation
 
@@ -84,10 +87,12 @@ geprüft und in der Datenschutzerklärung genannt werden.
 | PDF-Bytes | Download | RAM der einzelnen Streamlit-Session | bis Logout, Kontextwechsel oder Sessionende | Render |
 | Aggregierte Kennzahlen und maskierte Kategorien | KI-Interpretation | ausgehende Gemini-Anfrage | nach Google-Vertrag und Projekteinstellungen zu klären | Google Gemini |
 | Ereignistyp, Korrelations-ID, anonymisierte Nutzer-ID, Mengen und Laufzeiten | Betrieb und Fehleranalyse | Render-Logs | nach Render-Konfiguration zu klären | Render |
+| OIDC-Identität, E-Mail, Stripe Customer-/Subscription-ID und Abo-Status | optionales Billing und Berechtigung | PostgreSQL, nur bei aktiviertem Billing | bis administrative Kontolöschung und Ablauf gesetzlicher Aufbewahrungspflichten | Render/DB-Anbieter, Stripe |
 
-DataDeck besitzt keine Datenbank, keinen persistenten Upload-Speicher und kein
-automatisches Feedback-Attachment. Diese technische Übersicht ist eine Grundlage für
-die noch rechtlich zu prüfenden Texte und ersetzt keine Datenschutzerklärung oder AVV.
+Im aktuellen Beta-Deployment ist Billing deaktiviert und noch keine Billing-Datenbank
+angebunden. DataDeck besitzt keinen persistenten Upload-Speicher und kein automatisches
+Feedback-Attachment. Diese technische Übersicht ist eine Grundlage für die noch
+rechtlich zu prüfenden Texte und ersetzt keine Datenschutzerklärung oder AVV.
 
 ## Logging und Fehler
 

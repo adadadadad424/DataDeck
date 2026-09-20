@@ -70,9 +70,15 @@ Logs enthalten nur technische Metadaten und Korrelations-IDs. Der konkrete Betri
 und Rollbackablauf steht in `PRODUCTION_RUNBOOK.md`, Notfälle in
 `INCIDENT_RESPONSE.md`.
 
-## Keine Persistenz
+## Persistenzgrenze
 
 Upload, DataFrame, Analyse und PDF liegen nur im Arbeitsspeicher der jeweiligen Session.
-Es gibt keine Datenbank, keinen persistenten Datenträger und daher keine Backups von
-Kundendateien. Allowlist und Secrets liegen im Render Secret Store; Quellcode und
-Deployment-Konfiguration werden über das private Repository versioniert.
+Es gibt keine persistente Speicherung oder Backups von Kundendateien. Allowlist und
+Secrets liegen im Render Secret Store; Quellcode und Deployment-Konfiguration werden
+über das private Repository versioniert.
+
+Wenn Billing später aktiviert wird, speichert eine getrennte PostgreSQL-Datenbank nur
+Nutzerzuordnung, Stripe-IDs, Abo-Status und verarbeitete Event-IDs. Uploads, Kennzahlen,
+KI-Inhalte und PDFs werden nicht in diese Datenbank geschrieben. Der unabhängige
+Webhook-Dienst verwendet `Dockerfile.billing`; Einrichtung und Migration stehen in
+`BILLING.md`.

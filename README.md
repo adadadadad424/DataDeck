@@ -25,6 +25,7 @@ work/.venv/bin/python qa_runtime.py
 work/.venv/bin/python qa_beta_security.py
 work/.venv/bin/python qa_production.py
 work/.venv/bin/python qa_golden_datasets.py
+work/.venv/bin/python qa_billing.py
 work/.venv/bin/pip check
 ```
 
@@ -38,7 +39,10 @@ work/.venv/bin/pip check
 - `core/report_builder.py`: PDF aus den zentral berechneten Kennzahlen
 - `core/runtime_security.py`: Produktionsschutz, Allowlist, Session-Cleanup
 - `core/theme.py`: Light-/Dark-Designsystem
+- `billing/`: persistenter Billing-Status, Stripe-Checkout, Portal und Entitlements
+- `billing_service.py`: unabhängiger, signaturgeprüfter Stripe-Webhook-Endpunkt
 
 Produktionsbetrieb, Sicherheitsgrenzen und der Beta-Ablauf sind in
 `DEPLOYMENT.md`, `PRODUCTION_RUNBOOK.md`, `SECURITY_NOTES.md` und
-`BETA_LAUNCH_CHECKLIST.md` beschrieben.
+`BETA_LAUNCH_CHECKLIST.md` beschrieben. Die noch deaktivierte Stripe-Testintegration
+und ihre manuellen Einrichtungsschritte stehen in `BILLING.md`.
