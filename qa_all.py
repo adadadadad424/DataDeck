@@ -14,6 +14,7 @@ QA_SUITES = (
     "qa_golden_datasets.py",
     "qa_import_pipeline.py",
     "qa_consulting.py",
+    "qa_persistence.py",
     "qa_billing.py",
     "qa_runtime.py",
 )

@@ -6,8 +6,8 @@
 - Docker Runtime, Plan `free`, genau eine Instanz
 - verwaltetes HTTPS und WebSocket-Unterstützung
 - Google OIDC, serverseitige E-Mail-Allowlist
-- keine Datenbank und kein persistenter Datenträger
-- Uploads und PDFs ausschließlich im Session-Speicher
+- verwaltetes PostgreSQL für owner-isolierte, aggregierte Historie
+- Upload-Rohdaten und PDFs ausschließlich im Session-Speicher
 
 Eine Instanz ist für die erste Beta bewusst gewählt: Streamlit hält den aktiven
 Datensatz im Prozessspeicher. Horizontale Skalierung kommt erst nach einer expliziten
@@ -23,6 +23,8 @@ State-Architektur infrage.
    `https://<render-host>/oauth2callback`.
 6. Genau diese URI bei Google als autorisierte Redirect URI eintragen.
 7. Erst nach erfolgreichem Test eine eigene Domain verbinden und beide Seiten aktualisieren.
+8. `DATABASE_URL` über Renders Datastore-URL-Verknüpfung setzen, Migration trocken
+   prüfen, anwenden und anschließend den read-only Startup-Check verifizieren.
 
 ## Pflichtvariablen
 
@@ -77,7 +79,9 @@ Streamlit handhabt OIDC `state` und `nonce` selbst. Token werden durch
 
 Render Healthcheck nutzt `/_stcore/health`. Zusätzlich einen externen HTTPS-Uptime-
 Monitor auf denselben Pfad setzen. Alerts mindestens für Ausfall, Restarts, hohen RAM,
-`UNEXPECTED_ERROR`, `AI_PROVIDER_ERROR` und `PDF_ERROR` konfigurieren.
+`DATABASE_READY` fehlt, `CONSULTING_STORE_UNAVAILABLE`, `UNEXPECTED_ERROR`,
+`AI_PROVIDER_ERROR` und `PDF_ERROR` konfigurieren. Datenbank-Verbindungen, Speicher,
+CPU und langsame Abfragen im Render-Dashboard prüfen.
 
 Logs enthalten keine Rohdaten. Externes Error Tracking wird erst aktiviert, wenn
 automatische Local-Variable-/Request-Body-Erfassung sicher deaktiviert und PII-Scrubbing

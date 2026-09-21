@@ -32,6 +32,8 @@ class AnalysisSnapshot:
     executive_summary: str = ""
     consultant_comment: str = ""
     analysis_version: str = "1"
+    analysis_engine_version: str = "1"
+    analysis_schema_version: int = 1
     uploaded_at: dt.datetime | None = None
 
 

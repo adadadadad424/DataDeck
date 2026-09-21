@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from billing.config import BillingConfig, billing_enabled
+from billing.migrate import verify_migrations
 
 
 REQUIRED_PRODUCTION_ENV = (
@@ -22,6 +23,7 @@ REQUIRED_PRODUCTION_ENV = (
     "LEGAL_PRIVACY_URL",
     "LEGAL_TERMS_URL",
     "BETA_FEEDBACK_URL",
+    "DATABASE_URL",
 )
 
 
@@ -62,6 +64,9 @@ def validate_production_environment(environ: dict[str, str] | None = None) -> li
     redirect = env.get("OIDC_REDIRECT_URI", "").strip()
     if redirect and not redirect.rstrip("/").endswith("/oauth2callback"):
         errors.append("OIDC_REDIRECT_URI must end with /oauth2callback.")
+    database_url = env.get("DATABASE_URL", "").strip()
+    if database_url and not database_url.startswith(("postgresql://", "postgres://")):
+        errors.append("DATABASE_URL must be a PostgreSQL URL.")
     if billing_enabled(env):
         try:
             BillingConfig.from_env(env)
@@ -98,6 +103,25 @@ def main() -> None:
         for error in errors:
             print(f"- {error}", flush=True)
         raise SystemExit(78)
+
+    try:
+        schema = verify_migrations(os.environ["DATABASE_URL"])
+    except Exception as error:
+        print(
+            "DataDeck production startup refused: database readiness check failed "
+            f"({type(error).__name__}).",
+            flush=True,
+        )
+        raise SystemExit(78) from error
+    print(
+        json.dumps({
+            "event": "DATABASE_READY",
+            "migration_count": schema["migrations"],
+            "foreign_key_count": schema["foreign_keys"],
+            "index_count": schema["indexes"],
+        }),
+        flush=True,
+    )
 
     write_streamlit_auth_config(Path(".streamlit/secrets.toml"))
     for name in ("OIDC_CLIENT_SECRET", "OIDC_COOKIE_SECRET"):

@@ -26,6 +26,7 @@ def valid_environment() -> dict[str, str]:
         "LEGAL_PRIVACY_URL": "https://example.org/datenschutz",
         "LEGAL_TERMS_URL": "https://example.org/nutzungsbedingungen",
         "BETA_FEEDBACK_URL": "https://example.org/feedback",
+        "DATABASE_URL": "postgresql://datadeck.example.org/datadeck",
     }
 
 
@@ -36,6 +37,11 @@ class ProductionTests(unittest.TestCase):
 
     def test_valid_configuration_passes(self):
         self.assertEqual(validate_production_environment(valid_environment()), [])
+
+    def test_non_postgres_database_url_is_rejected(self):
+        env = valid_environment()
+        env["DATABASE_URL"] = "sqlite:///tmp/datadeck.db"
+        self.assertTrue(any("PostgreSQL URL" in error for error in validate_production_environment(env)))
 
     def test_enabled_billing_requires_complete_matching_test_configuration(self):
         env = valid_environment()

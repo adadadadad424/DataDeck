@@ -6,6 +6,8 @@ import json
 import os
 import uuid
 
+import psycopg
+
 from core.database import connect_postgres
 
 from .authorization import require_analysis_access, require_client_access
@@ -62,8 +64,17 @@ class PostgresConsultingStore:
         client_id = str(uuid.uuid4())
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
+                """INSERT INTO workspace_users (user_id) VALUES (%s)
+                   ON CONFLICT (user_id) DO UPDATE SET last_seen_at = NOW()""",
+                (owner_user_id,),
+            )
+            cursor.execute(
                 """INSERT INTO consulting_clients (client_id, owner_user_id, name, internal_reference)
-                   VALUES (%s, %s, %s, %s) RETURNING *""",
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (owner_user_id, name) DO UPDATE
+                   SET internal_reference = COALESCE(EXCLUDED.internal_reference, consulting_clients.internal_reference),
+                       updated_at = NOW()
+                   RETURNING *""",
                 (client_id, owner_user_id, clean_name, clean_reference),
             )
             return _client(cursor.fetchone())  # type: ignore[return-value]
@@ -99,23 +110,44 @@ class PostgresConsultingStore:
         insights_json = _json_payload(snapshot.insights, "Insights", 32_000)
         if len(snapshot.executive_summary) > 2_000 or len(snapshot.consultant_comment) > 2_000:
             raise ValueError("Berichtstext überschreitet das Speicherlimit")
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """INSERT INTO analysis_snapshots (
-                       analysis_id, owner_user_id, client_id, dataset_hash, period_start, period_end,
-                       mapping, analysis_result, quality_status, insights, executive_summary,
-                       consultant_comment, analysis_version, uploaded_at
-                   ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s,%s,%s,COALESCE(%s,NOW()))
-                   RETURNING *""",
-                (
-                    snapshot.analysis_id, snapshot.owner_user_id, snapshot.client_id,
-                    snapshot.dataset_hash, snapshot.period_start, snapshot.period_end,
-                    mapping_json, result_json, snapshot.quality_status,
-                    insights_json, snapshot.executive_summary,
-                    snapshot.consultant_comment, snapshot.analysis_version, snapshot.uploaded_at,
-                ),
-            )
-            return _snapshot(cursor.fetchone())  # type: ignore[return-value]
+        try:
+            with self._connect() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO analysis_snapshots (
+                           analysis_id, owner_user_id, client_id, dataset_hash, period_start, period_end,
+                           mapping, analysis_result, quality_status, insights, executive_summary,
+                           consultant_comment, analysis_version, analysis_engine_version,
+                           analysis_schema_version, uploaded_at
+                       ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s,%s,COALESCE(%s,NOW()))
+                       ON CONFLICT (analysis_id) DO NOTHING
+                       RETURNING *""",
+                    (
+                        snapshot.analysis_id, snapshot.owner_user_id, snapshot.client_id,
+                        snapshot.dataset_hash, snapshot.period_start, snapshot.period_end,
+                        mapping_json, result_json, snapshot.quality_status,
+                        insights_json, snapshot.executive_summary,
+                        snapshot.consultant_comment, snapshot.analysis_version,
+                        snapshot.analysis_engine_version, snapshot.analysis_schema_version,
+                        snapshot.uploaded_at,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    return _snapshot(row)  # type: ignore[return-value]
+                cursor.execute(
+                    """SELECT * FROM analysis_snapshots
+                       WHERE owner_user_id = %s AND client_id = %s AND analysis_id = %s""",
+                    (snapshot.owner_user_id, snapshot.client_id, snapshot.analysis_id),
+                )
+                existing = _snapshot(cursor.fetchone())
+                if existing is None or existing.dataset_hash != snapshot.dataset_hash:
+                    raise PermissionError("Analyse-ID gehört nicht zu diesem Nutzer oder Mandanten")
+                return existing
+        except psycopg.errors.UniqueViolation as exc:
+            constraint = getattr(exc.diag, "constraint_name", "")
+            if constraint == "analysis_snapshots_owner_user_id_client_id_dataset_hash_key":
+                raise ValueError("Dieser Datenstand wurde für den Mandanten bereits gespeichert") from exc
+            raise
 
     def list_analyses(self, owner_user_id: str, client_id: str) -> list[AnalysisSnapshot]:
         with self._connect() as connection, connection.cursor() as cursor:
@@ -143,6 +175,10 @@ class PostgresConsultingStore:
             raise PermissionError("Analyse gehört nicht zu diesem Nutzer")
         settings_json = _json_payload(settings, "Report-Einstellungen", 16_000)
         with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"report:{owner_user_id}:{analysis_id}",),
+            )
             cursor.execute(
                 """SELECT COALESCE(MAX(report_version), 0) + 1 AS next_version
                    FROM report_versions WHERE owner_user_id = %s AND analysis_id = %s""",
@@ -195,6 +231,15 @@ class InMemoryConsultingStore:
         clean_reference = (internal_reference or "").strip() or None
         if clean_reference and len(clean_reference) > 120:
             raise ValueError("Interne Referenz darf maximal 120 Zeichen lang sein")
+        existing = next(
+            (
+                item for item in self.clients.values()
+                if item.owner_user_id == owner_user_id and item.name == clean_name
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
         client = Client(str(uuid.uuid4()), owner_user_id, clean_name, clean_reference)
         self.clients[client.client_id] = client
         return client

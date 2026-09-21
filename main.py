@@ -1671,6 +1671,8 @@ def main() -> None:
                         executive_summary=current_ai.get("zusammenfassung", ""),
                         consultant_comment=st.session_state.consultant_comment,
                         analysis_version=APP_VERSION,
+                        analysis_engine_version=APP_VERSION,
+                        analysis_schema_version=1,
                     )
                     try:
                         with _operation_guard("client_write"):

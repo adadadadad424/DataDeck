@@ -1,0 +1,40 @@
+{
+  "cases": [
+    {
+      "name": "Mueller Wachstum",
+      "expected_trends": ["margin", "revenue"],
+      "periods": [
+        {"month": "2026-01", "segments": [["Enterprise", 60000, 42000], ["Legacy", 40000, 8000]], "expected": [100000, 50000, 50.0]},
+        {"month": "2026-02", "segments": [["Enterprise", 70000, 50400], ["Legacy", 38000, 6840]], "expected": [108000, 57240, 53.0]},
+        {"month": "2026-03", "segments": [["Enterprise", 80000, 59200], ["Legacy", 35000, 5250]], "expected": [115000, 64450, 56.0434782609]},
+        {"month": "2026-04", "segments": [["Enterprise", 90000, 68400], ["Legacy", 32000, 4160]], "expected": [122000, 72560, 59.4754098361]},
+        {"month": "2026-05", "segments": [["Enterprise", 100000, 78000], ["Legacy", 28000, 2800]], "expected": [128000, 80800, 63.125]},
+        {"month": "2026-06", "segments": [["Enterprise", 112000, 89600], ["Legacy", 22000, 1320]], "expected": [134000, 90920, 67.8507462687]}
+      ]
+    },
+    {
+      "name": "Nordstern Margendruck",
+      "expected_trends": ["margin"],
+      "periods": [
+        {"month": "2026-01", "segments": [["Core", 80000, 30000], ["Service", 20000, 5000]], "expected": [100000, 35000, 35.0]},
+        {"month": "2026-02", "segments": [["Core", 80000, 27500], ["Service", 20000, 4500]], "expected": [100000, 32000, 32.0]},
+        {"month": "2026-03", "segments": [["Core", 80000, 25000], ["Service", 20000, 4000]], "expected": [100000, 29000, 29.0]},
+        {"month": "2026-04", "segments": [["Core", 80000, 22500], ["Service", 20000, 3500]], "expected": [100000, 26000, 26.0]},
+        {"month": "2026-05", "segments": [["Core", 80000, 20000], ["Service", 20000, 3000]], "expected": [100000, 23000, 23.0]},
+        {"month": "2026-06", "segments": [["Core", 80000, 17500], ["Service", 20000, 2500]], "expected": [100000, 20000, 20.0]}
+      ]
+    },
+    {
+      "name": "Schmidt Volatilitaet",
+      "expected_trends": [],
+      "periods": [
+        {"month": "2026-01", "segments": [["Projects", 70000, 15000], ["Refunds", 10000, 1000]], "expected": [80000, 16000, 20.0]},
+        {"month": "2026-02", "segments": [["Projects", 125000, 35000], ["Refunds", -5000, -5000]], "expected": [120000, 30000, 25.0]},
+        {"month": "2026-03", "segments": [["Projects", 75000, 12000], ["Refunds", -5000, -5000]], "expected": [70000, 7000, 10.0]},
+        {"month": "2026-04", "segments": [["Projects", 145000, 40000], ["Refunds", -5000, -5000]], "expected": [140000, 35000, 25.0]},
+        {"month": "2026-05", "segments": [["Projects", 75000, 12000], ["Refunds", -10000, -10000]], "expected": [65000, 2000, 3.0769230769]},
+        {"month": "2026-06", "partial_end": 15, "segments": [["Projects", 100000, 18000], ["Refunds", -10000, -10000]], "expected": [90000, 8000, 8.8888888889]}
+      ]
+    }
+  ]
+}
