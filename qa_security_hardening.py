@@ -37,7 +37,7 @@ from core.data_processing import (
     clean_and_prepare_data,
     load_and_validate_file,
 )
-from core.report_builder import _blocking_url_fetcher, _template
+from core.report_builder import _blocking_url_fetcher, _template, generate_pdf
 from core.report_config import validated_logo_data_uri
 from core.runtime_security import clear_sensitive_session, oidc_claims_expired
 from core.security import detect_pii_types, escape_html, sanitize_for_prompt, scan_dataframe_for_pii
@@ -156,6 +156,30 @@ class SecurityHardeningTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Zeilen"):
                 _validate_xlsx_container(payload.getvalue(), 250)
 
+    def test_large_worksheet_has_a_separate_bounded_limit(self):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("xl/worksheets/sheet1.xml", b" " * (2 * 1024 * 1024))
+        with environment(MAX_XLSX_XML_MB=1, MAX_XLSX_WORKSHEET_XML_MB=3,
+                         MAX_XLSX_UNCOMPRESSED_MB=4):
+            _validate_xlsx_container(payload.getvalue(), 250)
+        with environment(MAX_XLSX_XML_MB=1, MAX_XLSX_WORKSHEET_XML_MB=1,
+                         MAX_XLSX_UNCOMPRESSED_MB=4):
+            with self.assertRaisesRegex(ValueError, "Tabellenblatt.*Limit von 1 MB"):
+                _validate_xlsx_container(payload.getvalue(), 250)
+        with environment(MAX_XLSX_WORKSHEET_XML_MB=3, MAX_XLSX_UNCOMPRESSED_MB=1):
+            with self.assertRaisesRegex(ValueError, "entpackte XLSX"):
+                _validate_xlsx_container(payload.getvalue(), 250)
+
+    def test_large_non_worksheet_xml_keeps_the_strict_limit(self):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("xl/styles.xml", b" " * (2 * 1024 * 1024))
+        with environment(MAX_XLSX_XML_MB=1, MAX_XLSX_WORKSHEET_XML_MB=3,
+                         MAX_XLSX_UNCOMPRESSED_MB=4):
+            with self.assertRaisesRegex(ValueError, "XML-Bestandteil.*Limit von 1 MB"):
+                _validate_xlsx_container(payload.getvalue(), 250)
+
     def test_11_logo_decompression_dimensions_are_rejected(self):
         payload = io.BytesIO()
         Image.new("1", (5000, 5000)).save(payload, format="PNG")
@@ -213,6 +237,25 @@ class SecurityHardeningTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 _blocking_url_fetcher(url)
 
+    def test_16b_pdf_allows_valid_embedded_logo_only(self):
+        image = Image.new("RGB", (2, 2), "#4F46E5")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        data_uri = validated_logo_data_uri(buffer.getvalue())
+        fetched = _blocking_url_fetcher(data_uri)
+        self.assertEqual(fetched.content_type, "image/png")
+        self.assertGreater(len(fetched.read()), 0)
+        fetched.close()
+        with self.assertRaises(ValueError):
+            _blocking_url_fetcher("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=")
+
+        clean, warnings = clean_and_prepare_data(pd.DataFrame({
+            "Kategorie": ["Beratung"], "Umsatz": [1000], "Gewinn": [300],
+        }))
+        kpis = calculate_kpis(clean, warnings)
+        pdf = generate_pdf(kpis, None, "Beratung", logo_bytes=buffer.getvalue())
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+
     def test_17_pii_scanner_samples_huge_frames(self):
         frame = pd.DataFrame({"email": [f"person{i}@example.org" for i in range(100)]})
         result = scan_dataframe_for_pii(frame, max_values_per_column=10, max_total_cells=10)
@@ -268,15 +311,32 @@ class SecurityHardeningTests(unittest.TestCase):
         with patch.dict(os.environ, _billing_env(), clear=False):
             with TestClient(app) as client:
                 response = client.get("/health")
+                https_response = client.get("/health", headers={"x-forwarded-proto": "https"})
                 wrong_method = client.post("/health")
         self.assertEqual(response.json(), {"status": "ok"})
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertEqual(response.headers["x-frame-options"], "DENY")
         self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.headers["cross-origin-opener-policy"], "same-origin")
+        self.assertEqual(response.headers["cross-origin-resource-policy"], "same-origin")
+        self.assertIn("max-age=31536000", https_response.headers["strict-transport-security"])
         self.assertEqual(wrong_method.status_code, 405)
 
     def test_23_logout_removes_security_and_customer_state(self):
-        state = {"security_session_id": "old", "raw_df": "secret", "theme": "dark"}
+        state = {
+            "security_session_id": "old",
+            "user_id_hash": "previous-user",
+            "raw_df": "secret",
+            "import_cache_key": ("dataset-hash", True, "Sheet1", 0),
+            "import_cache_df": "cached-secret",
+            "import_cache_truncated": False,
+            "import_cache_max_rows": 100_000,
+            "audit_dataset_fingerprint": "dataset-hash",
+            "pptx_bytes": b"customer-report",
+            "pptx_context_key": "old-context",
+            "last_report_id": "report-from-previous-user",
+            "theme": "dark",
+        }
         clear_sensitive_session(state)
         self.assertEqual(state, {"theme": "dark"})
 

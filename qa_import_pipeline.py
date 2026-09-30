@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import re
 import unittest
+import zipfile
 
 import openpyxl
 
@@ -28,6 +30,18 @@ def workbook_bytes() -> bytes:
     data.append(["B", -20, -5, "02.03.2026"])
     output = io.BytesIO()
     workbook.save(output)
+    return output.getvalue()
+
+
+def workbook_without_dimension_bytes() -> bytes:
+    source = workbook_bytes()
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source), "r") as zin, zipfile.ZipFile(output, "w") as zout:
+        for item in zin.infolist():
+            content = zin.read(item.filename)
+            if item.filename.startswith("xl/worksheets/sheet") and item.filename.endswith(".xml"):
+                content = re.sub(br"<dimension[^>]*/>", b"", content, count=1)
+            zout.writestr(item, content)
     return output.getvalue()
 
 
@@ -60,6 +74,13 @@ class ImportPipelineTests(unittest.TestCase):
         self.assertEqual(inspection["suggested_sheet"], "Daten")
         data_sheet = next(sheet for sheet in inspection["sheets"] if sheet["name"] == "Daten")
         self.assertEqual(data_sheet["suggested_header_row"], 2)
+
+    def test_03b_xlsx_without_dimension_metadata_is_supported(self):
+        inspection = inspect_file_structure(workbook_without_dimension_bytes(), "no-dimension.xlsx")
+        self.assertEqual(inspection["suggested_sheet"], "Daten")
+        data_sheet = next(sheet for sheet in inspection["sheets"] if sheet["name"] == "Daten")
+        self.assertEqual(data_sheet["suggested_header_row"], 2)
+        self.assertGreaterEqual(data_sheet["columns"], 4)
 
     def test_04_explicit_xlsx_sheet_and_header(self):
         frame, truncated, _ = load_and_validate_file(

@@ -13,3 +13,4 @@ tmp/
 .pytest_cache/
 .idea/
 .vscode/
+node_modules/

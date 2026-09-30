@@ -19,7 +19,8 @@ MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 MIGRATION_NAME = re.compile(r"^\d{3}(?:_[a-z0-9_]+)?$")
 EXPECTED_TABLES = {
     "schema_migrations", "billing_users", "stripe_events", "workspace_users",
-    "consulting_clients", "analysis_snapshots", "report_versions",
+    "workspaces", "workspace_members", "consulting_clients", "analysis_snapshots",
+    "report_versions", "audit_events", "report_approvals", "monitoring_findings",
 }
 
 
@@ -118,7 +119,7 @@ def audit_schema(cursor) -> dict[str, int | list[str]]:
     indexes = int(cursor.fetchone()["count"])
     cursor.execute("SELECT COUNT(*) AS count FROM schema_migrations")
     migration_count = int(cursor.fetchone()["count"])
-    if foreign_keys < 3 or indexes < 10:
+    if foreign_keys < 12 or indexes < 18:
         raise MigrationError("Schema audit found insufficient constraints or indexes")
     return {
         "tables": sorted(tables),

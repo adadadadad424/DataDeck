@@ -31,6 +31,14 @@ def upload_and_start(app, value):
     return app
 
 
+def create_export(app, choice):
+    app.segmented_control(key="report_export_choice").set_value(choice).run()
+    assert_ok(app)
+    app.button(key="generate_export_btn").click().run()
+    assert_ok(app)
+    return app
+
+
 def main():
     env_file = Path(".env")
     env_backup = Path("work/.env.qa_runtime_backup")
@@ -43,12 +51,14 @@ def main():
         assert_ok(app)
         app.button(key="demo_btn").click().run()
         assert_ok(app)
-        assert kpis(app)["Umsatz"] == "9.200 €"
+        assert kpis(app)["Umsatz"] == "320.075 €"
 
         app.button(key="generate_ai_btn").click().run()
         assert_ok(app)
         assert app.session_state["ai_insights_source"] == "local"
         assert app.session_state["ai_insights"]["action_plan"]
+        assert not any("Nächster Schritt: KI-Analyse starten" in item.value for item in app.markdown)
+        assert any("keine Daten an einen KI-Dienst übertragen" in item.value for item in app.caption)
 
         app.toggle(key="theme_toggle").set_value(True).run()
         assert_ok(app)
@@ -59,9 +69,10 @@ def main():
 
         app.toggle(key="premium_toggle").set_value(True).run()
         assert_ok(app)
-        app.button(key="generate_pdf_btn").click().run()
-        assert_ok(app)
+        create_export(app, "PDF-Report")
         assert app.session_state["pdf_bytes"].startswith(b"%PDF-")
+        create_export(app, "PowerPoint-Präsentation")
+        assert app.session_state["pptx_bytes"].startswith(b"PK")
 
         csv = b"Kategorie,Umsatz,Gewinn\nPlus,1000,300\nMinus,500,-400\n"
         upload_and_start(app, ("sample.csv", csv, "text/csv"))
@@ -69,8 +80,7 @@ def main():
         assert app.session_state["pdf_bytes"] is None
         assert any("lokale KPI-Analyse" in item.value for item in app.info)
 
-        app.button(key="generate_pdf_btn").click().run()
-        assert_ok(app)
+        create_export(app, "PDF-Report")
         assert app.session_state["pdf_bytes"].startswith(b"%PDF-")
         app.text_input(key="category_filter").set_value("Plus")
         app.button(key="FormSubmitter:filter_form-Filter anwenden").click().run()
@@ -95,8 +105,7 @@ def main():
         assert kpis(app)["Marge"] == "—"
         assert app.number_input(key="ziel_marge_input").disabled is True
         assert any("Kosteninformationen fehlen" in item.value for item in app.markdown)
-        app.button(key="generate_pdf_btn").click().run()
-        assert_ok(app)
+        create_export(app, "PDF-Report")
         assert app.session_state["pdf_bytes"].startswith(b"%PDF-")
 
         workbook = openpyxl.Workbook()
@@ -115,8 +124,7 @@ def main():
             "action_plan": ["OLD ACTION"],
         }
         app.session_state["ai_insights_key"] = "old-context"
-        app.button(key="generate_pdf_btn").click().run()
-        assert_ok(app)
+        create_export(app, "PDF-Report")
         assert app.session_state["pdf_bytes"].startswith(b"%PDF-")
         assert any("ohne die veraltete KI-Analyse" in item.value for item in app.caption)
 
@@ -126,7 +134,7 @@ def main():
         assert app.session_state["prepared_df_cache"] is None
         assert app.session_state["pii_scan_cache"] is None
         assert app.session_state["kpi_cache"] is None
-        print("Runtime QA: Demo, CSV, Revenue-only, XLSX, Filter, Theme, no-key AI, stale AI and real PDF PASS")
+        print("Runtime QA: Demo, CSV, Revenue-only, XLSX, Filter, Theme, no-key AI, stale AI, real PDF and PPTX PASS")
     finally:
         if env_backup.exists():
             env_backup.replace(env_file)

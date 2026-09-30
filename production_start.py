@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from billing.config import BillingConfig, billing_enabled
-from billing.migrate import verify_migrations
+from billing.migrate import apply_migrations, verify_migrations
 
 
 REQUIRED_PRODUCTION_ENV = (
@@ -105,6 +105,7 @@ def main() -> None:
         raise SystemExit(78)
 
     try:
+        applied = apply_migrations(os.environ["DATABASE_URL"])
         schema = verify_migrations(os.environ["DATABASE_URL"])
     except Exception as error:
         print(
@@ -116,6 +117,7 @@ def main() -> None:
     print(
         json.dumps({
             "event": "DATABASE_READY",
+            "newly_applied_migrations": len(applied),
             "migration_count": schema["migrations"],
             "foreign_key_count": schema["foreign_keys"],
             "index_count": schema["indexes"],

@@ -9,8 +9,22 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
+from .report_language import normalize_report_language
+
 
 DEFAULT_ACCENT = "#4F46E5"
+PPT_DECK_STYLES = {"full", "short"}
+PPT_AUDIENCES = {"management", "finance", "growth"}
+
+
+def normalize_ppt_deck_style(value: str | None) -> str:
+    candidate = str(value or "full").strip().lower()
+    return candidate if candidate in PPT_DECK_STYLES else "full"
+
+
+def normalize_ppt_audience(value: str | None) -> str:
+    candidate = str(value or "management").strip().lower()
+    return candidate if candidate in PPT_AUDIENCES else "management"
 
 
 def validate_accent_color(value: str | None) -> str:
@@ -65,6 +79,14 @@ def validated_logo_data_uri(
     return f"data:{mime};base64,{base64.b64encode(safe_content).decode('ascii')}"
 
 
+def validated_logo_bytes(content: bytes | None) -> bytes | None:
+    """Return decoded, sanitized image bytes for non-HTML report formats."""
+    data_uri = validated_logo_data_uri(content)
+    if data_uri is None:
+        return None
+    return base64.b64decode(data_uri.split(",", 1)[1])
+
+
 def normalize_report_settings(settings: dict | None) -> dict:
     source = settings or {}
     return {
@@ -74,7 +96,12 @@ def normalize_report_settings(settings: dict | None) -> dict:
         "show_time_series": bool(source.get("show_time_series", True)),
         "show_ai_insights": bool(source.get("show_ai_insights", True)),
         "show_methodology": bool(source.get("show_methodology", True)),
+        "language": normalize_report_language(source.get("language")),
+        "ppt_deck_style": normalize_ppt_deck_style(source.get("ppt_deck_style")),
+        "ppt_audience": normalize_ppt_audience(source.get("ppt_audience")),
+        "ppt_speaker_notes": bool(source.get("ppt_speaker_notes", False)),
         "company_name": str(source.get("company_name", "")).strip()[:160],
+        "client_name": str(source.get("client_name", "")).strip()[:160],
         "accent_color": validate_accent_color(source.get("accent_color")),
         "contact_name": str(source.get("contact_name", "")).strip()[:120],
         "contact_email": str(source.get("contact_email", "")).strip()[:200],

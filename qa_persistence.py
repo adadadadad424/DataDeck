@@ -80,6 +80,12 @@ def _snapshot_from_period(owner_id: str, client_id: str, case_name: str, period:
 def _cleanup(database_url: str, owner_ids: list[str]) -> None:
     close_postgres_pools()
     with connect_postgres(database_url, migration=True) as connection, connection.cursor() as cursor:
+        workspace_ids = [str(uuid.UUID(hashlib.md5(
+            f"datadeck-personal-workspace:{owner_id}".encode()).hexdigest())) for owner_id in owner_ids]
+        cursor.execute("ALTER TABLE audit_events DISABLE TRIGGER audit_events_immutable")
+        cursor.execute("DELETE FROM audit_events WHERE workspace_id = ANY(%s::uuid[])", (workspace_ids,))
+        cursor.execute("ALTER TABLE audit_events ENABLE TRIGGER audit_events_immutable")
+        cursor.execute("DELETE FROM workspaces WHERE workspace_id = ANY(%s::uuid[])", (workspace_ids,))
         cursor.execute("DELETE FROM workspace_users WHERE user_id = ANY(%s::uuid[])", (owner_ids,))
 
 
@@ -95,21 +101,29 @@ def _run_scale_probe(database_url: str) -> None:
                    FROM generate_series(1, 100) AS owner_no"""
             )
             cursor.execute(
-                """INSERT INTO consulting_clients (client_id, owner_user_id, name)
+                """INSERT INTO workspaces (workspace_id, name, created_by)
+                   SELECT md5('datadeck-personal-workspace:' || md5('scale-owner-' || owner_no::text)::uuid::text)::uuid,
+                          'Scale Workspace', md5('scale-owner-' || owner_no::text)::uuid
+                   FROM generate_series(1, 100) AS owner_no"""
+            )
+            cursor.execute(
+                """INSERT INTO consulting_clients (client_id, owner_user_id, workspace_id, name)
                    SELECT md5('scale-client-' || owner_no::text || '-' || client_no::text)::uuid,
                           md5('scale-owner-' || owner_no::text)::uuid,
+                          md5('datadeck-personal-workspace:' || md5('scale-owner-' || owner_no::text)::uuid::text)::uuid,
                           'Scale Client ' || client_no::text
                    FROM generate_series(1, 100) AS owner_no
                    CROSS JOIN generate_series(1, 20) AS client_no"""
             )
             cursor.execute(
                 """INSERT INTO analysis_snapshots (
-                       analysis_id, owner_user_id, client_id, dataset_hash,
+                       analysis_id, owner_user_id, workspace_id, client_id, dataset_hash,
                        period_start, period_end, mapping, analysis_result, quality_status,
                        analysis_version, analysis_engine_version, analysis_schema_version
                    )
                    SELECT md5('scale-analysis-' || owner_no::text || '-' || client_no::text || '-' || period_no::text)::uuid,
                           md5('scale-owner-' || owner_no::text)::uuid,
+                          md5('datadeck-personal-workspace:' || md5('scale-owner-' || owner_no::text)::uuid::text)::uuid,
                           md5('scale-client-' || owner_no::text || '-' || client_no::text)::uuid,
                           md5('scale-dataset-' || owner_no::text || '-' || client_no::text || '-' || period_no::text)
                               || md5('scale-dataset-b-' || owner_no::text || '-' || client_no::text || '-' || period_no::text),
@@ -191,6 +205,23 @@ def run(database_url: str) -> None:
         if store.get_analysis(foreign_owner, first_snapshots[0].analysis_id) is not None:
             raise AssertionError("Cross-owner analysis access leaked")
 
+        first_workspace = store.ensure_personal_workspace(first_owner).workspace_id
+        store.add_member(first_owner, first_workspace, foreign_owner, "CONSULTANT")
+        team_snapshot = replace(
+            first_snapshots[0], analysis_id=str(uuid.uuid4()), owner_user_id=foreign_owner,
+            dataset_hash=hashlib.sha256(b"synthetic-team-analysis").hexdigest(),
+        )
+        team_saved = store.save_analysis(team_snapshot)
+        if store.get_analysis(first_owner, team_saved.analysis_id) is None:
+            raise AssertionError("Workspace owner cannot read consultant analysis")
+        team_report = store.save_report_metadata(
+            foreign_owner, first_client, team_saved.analysis_id, {"format": "PPTX"}, None,
+        )
+        if store.get_report(first_owner, team_report.report_id) is None:
+            raise AssertionError("Workspace owner cannot read consultant report")
+        if store.get_analysis(owner_ids[2], team_saved.analysis_id) is not None:
+            raise AssertionError("Unrelated workspace user can read team analysis")
+
         with ThreadPoolExecutor(max_workers=10) as executor:
             counts = list(executor.map(
                 lambda owner: len(store.list_clients(owner)),
@@ -202,7 +233,7 @@ def run(database_url: str) -> None:
         close_postgres_pools()
         restarted_store = PostgresConsultingStore(database_url)
         restored = restarted_store.list_analyses(first_owner, first_client)
-        if len(restored) != 6 or restored[0].analysis_engine_version != "0.9.1-beta":
+        if len(restored) != 7 or restored[0].analysis_engine_version != "0.9.1-beta":
             raise AssertionError("History did not survive connection-pool restart")
         if restored[0].consultant_comment != "Final validation comment.":
             raise AssertionError("Edited consultant text was not persisted")

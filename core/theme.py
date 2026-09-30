@@ -32,12 +32,12 @@ FONT_STACK = (
 
 THEMES: dict[str, dict[str, str]] = {
     "light": {
-        "bg": "#F7F7FB",
+        "bg": "#F8FAFC",
         "surface": "#FFFFFF",
-        "surface_alt": "#F1F1F7",
-        "text": "#12121A",
-        "text_muted": "#6B6B7A",
-        "border": "#E6E6EF",
+        "surface_alt": "#F3F5F9",
+        "text": "#161820",
+        "text_muted": "#667085",
+        "border": "#E3E7EE",
         "accent": BRAND,
         "accent_hover": BRAND_HOVER,
         "accent_soft": "#EEEDFD",
@@ -49,7 +49,7 @@ THEMES: dict[str, dict[str, str]] = {
         "error": "#D2402C",
         "error_bg": "#FBEAE7",
         "info_bg": "#EEF1FC",
-        "shadow": "0 1px 2px rgba(16,16,40,0.04), 0 8px 24px rgba(16,16,40,0.06)",
+        "shadow": "0 1px 2px rgba(16,24,40,0.04), 0 10px 30px rgba(16,24,40,0.05)",
         "chip_demo_bg": "#FDF3E3",
         "chip_demo_text": "#8A5A12",
     },
@@ -142,7 +142,7 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     p, label, span, div {{ color: {theme['text']}; }}
 
     #MainMenu, footer, header {{ visibility: hidden; }}
-    .block-container {{ padding-top: 1.4rem; padding-bottom: 2rem; max-width: 1180px; }}
+    .block-container {{ padding-top: 1.8rem; padding-bottom: 3.5rem; max-width: 1120px; }}
 
     /* ---- Sidebar / App-Shell ---- */
     [data-testid="stSidebar"] {{
@@ -159,10 +159,11 @@ def inject_theme_css(theme: dict[str, str]) -> str:
         background-color: {theme['accent']} !important;
         color: {theme['accent_text']} !important;
         border: none !important;
-        border-radius: {RADIUS_SM} !important;
+        border-radius: {RADIUS_MD} !important;
         font-weight: 600 !important;
-        padding: 0.55rem 1.1rem !important;
-        transition: background-color 0.15s ease;
+        min-height: 42px;
+        padding: 0.58rem 1.15rem !important;
+        transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     }}
     .stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {{
         background-color: {theme['accent_hover']} !important;
@@ -184,6 +185,7 @@ def inject_theme_css(theme: dict[str, str]) -> str:
         background-color: transparent !important;
         color: {theme['text']} !important;
         border: 1px solid {theme['border']} !important;
+        box-shadow: none !important;
     }}
     .stButton > button[kind="secondary"] * {{ color: {theme['text']} !important; }}
     .stButton > button *, .stDownloadButton > button *, .stFormSubmitButton > button * {{
@@ -217,15 +219,55 @@ def inject_theme_css(theme: dict[str, str]) -> str:
         background-color: {theme['surface']} !important;
         border: 1px solid {theme['border']} !important;
         border-radius: {RADIUS_MD} !important;
+        margin: 10px 0 14px;
+        box-shadow: none !important;
+    }}
+    [data-testid="stExpander"] details,
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] details[open] > summary,
+    [data-testid="stExpander"] summary:hover,
+    [data-testid="stExpander"] summary:focus,
+    [data-testid="stExpander"] summary:active,
+    [data-testid="stExpanderDetails"] {{
+        background-color: {theme['surface']} !important;
+        color: {theme['text']} !important;
+    }}
+    [data-testid="stExpander"] summary * {{
+        color: {theme['text']} !important;
+    }}
+    [data-testid="stExpander"] summary {{
+        min-height: 48px;
+        font-weight: 600;
+    }}
+    [data-testid="stExpander"] summary:focus-visible {{
+        outline: 2px solid {theme['accent']} !important;
+        outline-offset: -2px;
     }}
 
     /* ---- Inputs ---- */
     [data-testid="stTextInput"] input,
-    [data-testid="stNumberInput"] input {{
+    [data-testid="stNumberInput"] input,
+    [data-testid="stTextArea"] textarea {{
         background-color: {theme['surface']} !important;
         color: {theme['text']} !important;
         border: 1px solid {theme['border']} !important;
         border-radius: {RADIUS_SM} !important;
+    }}
+    [data-testid="stTextInput"] input,
+    [data-testid="stNumberInput"] input {{ min-height: 42px; }}
+    [data-testid="stTextArea"] [data-baseweb="textarea"],
+    [data-testid="stTextArea"] div[data-baseweb="base-input"] {{
+        background-color: {theme['surface']} !important;
+        color: {theme['text']} !important;
+        border-color: {theme['border']} !important;
+    }}
+    [data-testid="stTextArea"] textarea:focus,
+    [data-testid="stTextArea"] div[data-baseweb="base-input"]:focus-within {{
+        border-color: {theme['accent']} !important;
+        box-shadow: 0 0 0 1px {theme['accent']} !important;
+    }}
+    [data-testid="stTextArea"] textarea::placeholder {{
+        color: {theme['text_muted']} !important;
     }}
     [data-testid="stSelectbox"] [role="group"],
     [data-testid="stNumberInputContainer"] {{
@@ -257,6 +299,33 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     }}
     [data-testid="stSlider"] [data-baseweb="slider"] div[role="slider"] {{
         background-color: {theme['accent']} !important;
+    }}
+    [data-testid="stSegmentedControl"],
+    [role="radiogroup"][aria-label="Was möchten Sie erstellen?"] {{
+        background: {theme['surface_alt']} !important;
+        border: 1px solid {theme['border']} !important;
+        border-radius: {RADIUS_MD} !important;
+        padding: 4px !important;
+    }}
+    [data-testid="stSegmentedControl"] button,
+    [role="radiogroup"][aria-label="Was möchten Sie erstellen?"] button {{
+        background: transparent !important;
+        color: {theme['text']} !important;
+        border: 1px solid transparent !important;
+        min-height: 40px;
+        border-radius: {RADIUS_SM} !important;
+        font-weight: 600 !important;
+    }}
+    [role="radiogroup"][aria-label="Was möchten Sie erstellen?"] button * {{
+        color: {theme['text']} !important;
+    }}
+    [role="radiogroup"][aria-label="Was möchten Sie erstellen?"] button[data-selected="true"] {{
+        background: {theme['accent_soft']} !important;
+        border-color: {theme['accent']} !important;
+        box-shadow: inset 0 0 0 1px {theme['accent']} !important;
+    }}
+    [role="radiogroup"][aria-label="Was möchten Sie erstellen?"] button[data-selected="true"] * {{
+        color: {theme['accent']} !important;
     }}
     [data-testid="stFileUploaderDropzone"] {{
         background-color: {theme['surface_alt']} !important;
@@ -324,9 +393,9 @@ def inject_theme_css(theme: dict[str, str]) -> str:
         background: {theme['surface']};
         border: 1px solid {theme['border']};
         border-radius: {RADIUS_MD};
-        padding: 16px 18px;
+        padding: 20px 22px;
         box-shadow: {theme['shadow']};
-        margin-bottom: 14px;
+        margin-bottom: 16px;
     }}
     .dd-card-flat {{
         background: {theme['surface_alt']};
@@ -338,11 +407,29 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     .dd-status-grid {{
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 16px;
+        gap: 14px;
         align-items: stretch;
         margin: 14px 0;
     }}
+    .dd-status-grid-compact {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }}
     .dd-status-grid .dd-card {{ height: 100%; box-sizing: border-box; margin-bottom: 0; }}
+    .dd-card.assistant {{
+        background: {theme['accent_soft']};
+        border-color: {theme['accent']};
+        box-shadow: none;
+    }}
+    .dd-card.assistant ol {{
+        margin: 10px 0 0 1.1rem;
+        padding: 0;
+        color: {theme['text']};
+    }}
+    .dd-card.assistant li {{
+        margin: 4px 0;
+        padding-left: 2px;
+    }}
 
     .dd-kpi-label {{
         color: {theme['text_muted']};
@@ -372,13 +459,13 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     }}
     .dd-kpi-label + .dd-kpi-value {{ min-height: 2.25rem; }}
 
-    .dd-section-header {{ margin: 24px 0 10px; }}
-    .dd-section-header h3 {{ margin: 0; font-size: 1.35rem; line-height: 1.25; }}
+    .dd-section-header {{ margin: 42px 0 16px; }}
+    .dd-section-header h3 {{ margin: 0; font-size: 1.4rem; line-height: 1.25; }}
     .dd-section-description {{
         color: {theme['text_muted']};
         font-size: 0.88rem;
         line-height: 1.4;
-        margin-top: 3px;
+        margin-top: 5px;
     }}
 
     .dd-onboarding-step {{
@@ -477,6 +564,10 @@ def inject_theme_css(theme: dict[str, str]) -> str:
     @media (max-width: 900px) {{
         .dd-status-grid {{ grid-template-columns: 1fr; gap: 10px; }}
         .dd-kpi-value {{ font-size: 1.5rem; }}
+    }}
+    @media (max-width: 600px) {{
+        h1 {{ font-size: 2rem !important; line-height: 1.14 !important; }}
+        .block-container {{ padding-top: 1.2rem; padding-bottom: 2.5rem; }}
     }}
     </style>
     """

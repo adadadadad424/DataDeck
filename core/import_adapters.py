@@ -42,6 +42,17 @@ class InputAdapter(Protocol):
 
     def inspect(self, content: bytes, source_name: str) -> dict: ...
 
+    def authenticate(self, credentials: dict | None = None) -> None: ...
+
+    def fetch_data(self, content: bytes, source_name: str) -> bytes: ...
+
+    def normalize(
+        self, content: bytes, source_name: str, *, premium: bool,
+        sheet_name: str | None = None, header_row: int | None = None,
+    ) -> tuple[pd.DataFrame, bool, int]: ...
+
+    def validate(self, frame: pd.DataFrame) -> None: ...
+
     def load(
         self, content: bytes, source_name: str, *, premium: bool,
         sheet_name: str | None = None, header_row: int | None = None,
@@ -56,6 +67,25 @@ class FileAdapter:
 
     def inspect(self, content: bytes, source_name: str) -> dict:
         return inspect_file_structure(content, source_name)
+
+    def authenticate(self, credentials: dict | None = None) -> None:
+        if credentials:
+            raise ValueError("Dateiimporte benötigen keine Zugangsdaten")
+
+    def fetch_data(self, content: bytes, source_name: str) -> bytes:
+        if not content:
+            raise ValueError("Die Datenquelle ist leer")
+        return bytes(content)
+
+    def normalize(
+        self, content: bytes, source_name: str, *, premium: bool,
+        sheet_name: str | None = None, header_row: int | None = None,
+    ) -> tuple[pd.DataFrame, bool, int]:
+        return self.load(content, source_name, premium=premium, sheet_name=sheet_name, header_row=header_row)
+
+    def validate(self, frame: pd.DataFrame) -> None:
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            raise ValueError("Die normalisierte Datenquelle enthält keine Datensätze")
 
     def load(
         self, content: bytes, source_name: str, *, premium: bool,

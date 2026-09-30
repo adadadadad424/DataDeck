@@ -15,6 +15,7 @@ class Client:
     internal_reference: str | None = None
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
+    workspace_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class AnalysisSnapshot:
     analysis_engine_version: str = "1"
     analysis_schema_version: int = 1
     uploaded_at: dt.datetime | None = None
+    workspace_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,3 +64,54 @@ class ReportMetadata:
     settings: dict[str, Any]
     report_hash: str | None = None
     created_at: dt.datetime | None = None
+    workspace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Workspace:
+    workspace_id: str
+    name: str
+    created_by: str
+    base_plan: str = "beta"
+    included_seats: int = 1
+    included_clients: int = 10
+    extra_seats: int = 0
+    extra_clients: int = 0
+    created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
+
+
+@dataclass(frozen=True)
+class WorkspaceMembership:
+    workspace_id: str
+    user_id: str
+    role: str
+    created_at: dt.datetime | None = None
+
+
+@dataclass(frozen=True)
+class AuditEvent:
+    event_id: str
+    workspace_id: str
+    anonymous_actor_id: str
+    event_type: str
+    resource_type: str
+    resource_id: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: dt.datetime | None = None
+
+
+@dataclass(frozen=True)
+class MonitoringFinding:
+    finding_id: str
+    workspace_id: str
+    client_id: str
+    rule_id: str
+    fingerprint: str
+    severity: str
+    status: str
+    title: str
+    detail: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+    first_seen_at: dt.datetime | None = None
+    last_seen_at: dt.datetime | None = None

@@ -52,6 +52,7 @@ DEFAULT_MAX_CSV_FIELD_CHARS = 100_000
 DEFAULT_MAX_SOURCE_ROWS = 250_000
 DEFAULT_MAX_XLSX_ENTRIES = 2_000
 DEFAULT_MAX_XLSX_XML_MB = 32
+DEFAULT_MAX_XLSX_WORKSHEET_XML_MB = 96
 MISSING_VALUE_TOKENS = frozenset({
     "", "null", "n/a", "na", "nan", "none", "-", "—", "k.a.", "k.a", "keine angabe",
 })
@@ -96,7 +97,7 @@ def _ensure_before_deadline(deadline: float) -> None:
         raise ValueError("Die Dateiverarbeitung hat das sichere Zeitlimit überschritten.")
 
 
-def _validate_csv_content(file_content: bytes, max_columns: int) -> None:
+def _validate_csv_content(file_content: bytes, max_columns: int) -> tuple[str, str, str]:
     sample = file_content[:1_000_000]
     if b"\x00" in sample:
         raise ValueError("Die CSV-Datei enthält Binärdaten und wurde aus Sicherheitsgründen abgelehnt.")
@@ -105,15 +106,7 @@ def _validate_csv_content(file_content: bytes, max_columns: int) -> None:
     if sample and control_bytes / len(sample) > 0.01:
         raise ValueError("Die Datei sieht nicht wie eine gültige Text-CSV aus.")
 
-    text = None
-    for encoding in ("utf-8-sig", "cp1252", "latin1"):
-        try:
-            text = file_content.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    if not text:
-        raise ValueError("Die CSV-Datei konnte nicht als Text gelesen werden.")
+    text, encoding = _decode_csv(file_content)
 
     detected = _detect_csv_header(text[:1_000_000])
     delimiter = detected[1] if detected else None
@@ -144,6 +137,7 @@ def _validate_csv_content(file_content: bytes, max_columns: int) -> None:
         raise ValueError("Die CSV-Struktur ist beschädigt oder enthält ein zu großes Feld.") from error
     if widest > max_columns:
         raise ValueError(f"Die Datei überschreitet das Spaltenlimit von {max_columns} Spalten.")
+    return text, encoding, delimiter
 
 
 def _validate_xlsx_container(file_content: bytes, max_columns: int) -> None:
@@ -156,6 +150,9 @@ def _validate_xlsx_container(file_content: bytes, max_columns: int) -> None:
     ) * 1024 * 1024
     max_entries = _positive_env_int("MAX_XLSX_ENTRIES", DEFAULT_MAX_XLSX_ENTRIES, 10_000)
     max_xml_size = _positive_env_int("MAX_XLSX_XML_MB", DEFAULT_MAX_XLSX_XML_MB, 128) * 1024 * 1024
+    max_worksheet_size = _positive_env_int(
+        "MAX_XLSX_WORKSHEET_XML_MB", DEFAULT_MAX_XLSX_WORKSHEET_XML_MB, 100
+    ) * 1024 * 1024
     max_source_rows = _positive_env_int("MAX_SOURCE_ROWS", DEFAULT_MAX_SOURCE_ROWS, 1_000_000)
     try:
         with zipfile.ZipFile(io.BytesIO(file_content)) as archive:
@@ -173,8 +170,15 @@ def _validate_xlsx_container(file_content: bytes, max_columns: int) -> None:
                     or "../" in normalized_name
                 ):
                     raise ValueError("Die XLSX-Datei enthält einen unsicheren internen Pfad.")
-                if entry.filename.lower().endswith(".xml") and entry.file_size > max_xml_size:
-                    raise ValueError("Ein interner XLSX-XML-Bestandteil ist ungewöhnlich groß.")
+                is_worksheet = bool(re.fullmatch(r"xl/worksheets/sheet\d+\.xml", normalized_name.lower()))
+                xml_limit = max_worksheet_size if is_worksheet else max_xml_size
+                if normalized_name.lower().endswith(".xml") and entry.file_size > xml_limit:
+                    part = "Ein Tabellenblatt" if is_worksheet else "Ein interner XLSX-XML-Bestandteil"
+                    raise ValueError(
+                        f"{part} benötigt entpackt {entry.file_size / (1024 * 1024):.1f} MB "
+                        f"und überschreitet das Limit von {xml_limit // (1024 * 1024)} MB. "
+                        "Bitte das benötigte Datenblatt als CSV exportieren oder die Datei aufteilen."
+                    )
                 if entry.file_size > 100 * 1024 * 1024:
                     raise ValueError("Ein interner XLSX-Bestandteil ist ungewöhnlich groß.")
                 if entry.file_size > 1_000_000 and entry.file_size > max(1, entry.compress_size) * 100:
@@ -813,16 +817,9 @@ def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
     name_lower = safe_name.lower()
     if name_lower.endswith(".csv"):
         max_columns = _positive_env_int("MAX_DATASET_COLUMNS", DEFAULT_MAX_COLUMNS, 2_000)
-        _validate_csv_content(file_content, max_columns)
+        text, encoding, delimiter = _validate_csv_content(file_content, max_columns)
         _ensure_before_deadline(deadline)
-        text, encoding = _decode_csv(file_content)
         detected = _detect_csv_header(text, max_scan_rows=10)
-        delimiter = detected[1] if detected else None
-        if delimiter is None:
-            try:
-                delimiter = csv.Sniffer().sniff(text[:8192], delimiters=",;\t|").delimiter
-            except csv.Error:
-                delimiter = ","
         preview = _csv_preview_frame(text, delimiter)
         _ensure_before_deadline(deadline)
         candidates = _header_candidates(preview)
@@ -854,19 +851,24 @@ def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
         sheets = []
         for worksheet in workbook.worksheets:
             _ensure_before_deadline(deadline)
-            rows = list(worksheet.iter_rows(min_row=1, max_row=min(12, worksheet.max_row), values_only=True))
+            max_row = worksheet.max_row
+            max_column = worksheet.max_column
+            preview_limit = min(12, max_row) if isinstance(max_row, int) and max_row > 0 else 12
+            rows = list(worksheet.iter_rows(min_row=1, max_row=preview_limit, values_only=True))
             width = max((len(row) for row in rows), default=0)
             padded = [list(row) + [None] * (width - len(row)) for row in rows]
             preview = pd.DataFrame(padded)
             candidates = _header_candidates(preview)
             selected = candidates[0]["row"] if candidates else 0
             score = candidates[0]["score"] if candidates else 0
+            row_count = max_row if isinstance(max_row, int) and max_row > 0 else len(rows)
+            column_count = max_column if isinstance(max_column, int) and max_column > 0 else width
             sheets.append({
-                "name": str(worksheet.title), "rows": max(0, int(worksheet.max_row) - selected - 1),
-                "columns": int(worksheet.max_column), "header_candidates": candidates,
+                "name": str(worksheet.title), "rows": max(0, int(row_count) - selected - 1),
+                "columns": int(column_count), "header_candidates": candidates,
                 "suggested_header_row": int(selected),
                 "header_confidence": "hoch" if score >= 4 else "mittel" if score >= 1 else "niedrig",
-                "tabular_score": score + int(worksheet.max_row > selected + 1),
+                "tabular_score": score + int(row_count > selected + 1),
                 "preview_row_count": int(len(preview)),
                 "preview": _row_preview(preview, limit=10),
             })
@@ -884,7 +886,15 @@ def inspect_file_structure(file_content: bytes, file_name: str) -> dict:
     }
 
 
-def _read_csv_robust(file_content: bytes, nrows: int, header_row: int | None = None) -> pd.DataFrame:
+def _read_csv_robust(
+    file_content: bytes,
+    nrows: int,
+    header_row: int | None = None,
+    *,
+    decoded_text: str | None = None,
+    detected_encoding: str | None = None,
+    detected_delimiter: str | None = None,
+) -> pd.DataFrame:
     """
     Liest eine CSV-Datei robust ein (Audit DATA-1, DATA-2):
     - erkennt automatisch das Trennzeichen (Komma ODER Semikolon - in
@@ -894,9 +904,26 @@ def _read_csv_robust(file_content: bytes, nrows: int, header_row: int | None = N
       und Windows-1252 (in deutschen Excel-Exporten häufig)
     - liest höchstens `nrows` Zeilen ein
     """
+    if decoded_text is not None and detected_delimiter is not None:
+        try:
+            detected_header = _detect_csv_header(decoded_text)
+            skiprows = header_row if header_row is not None else (detected_header[0] if detected_header else 0)
+            return pd.read_csv(
+                io.StringIO(decoded_text),
+                sep=detected_delimiter,
+                skiprows=skiprows,
+                nrows=nrows,
+            )
+        except (pd.errors.ParserError, pd.errors.EmptyDataError) as error:
+            raise ValueError(
+                "Die CSV-Datei konnte nicht gelesen werden. Bitte prüfe "
+                "Zeichenkodierung und Trennzeichen (Komma oder Semikolon)."
+            ) from error
+
     last_error: Exception | None = None
 
-    for encoding in ('utf-8-sig', 'cp1252', 'latin1'):
+    encodings = (detected_encoding,) if detected_encoding else ('utf-8-sig', 'cp1252', 'latin1')
+    for encoding in encodings:
         try:
             text = file_content.decode(encoding)
             detected_header = _detect_csv_header(text)
@@ -987,9 +1014,16 @@ def load_and_validate_file(
     name_lower = safe_name.lower()
 
     if name_lower.endswith('.csv'):
-        _validate_csv_content(file_content, max_columns)
+        text, encoding, delimiter = _validate_csv_content(file_content, max_columns)
         _ensure_before_deadline(deadline)
-        df = _read_csv_robust(file_content, nrows=max_rows + 1, header_row=header_row)
+        df = _read_csv_robust(
+            file_content,
+            nrows=max_rows + 1,
+            header_row=header_row,
+            decoded_text=text,
+            detected_encoding=encoding,
+            detected_delimiter=delimiter,
+        )
 
     elif name_lower.endswith('.xlsx'):
         _validate_xlsx_container(file_content, max_columns)
@@ -1224,7 +1258,11 @@ def clean_and_prepare_data(
         "kanal",
         "automarke",
         "fahrzeug",
-        "bereich"
+        "bereich",
+        "leistung",
+        "service",
+        "angebot",
+        "business unit",
     ]
 
     datum_aliases = [

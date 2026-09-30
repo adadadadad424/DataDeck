@@ -255,14 +255,17 @@ print("=" * 70)
 demo_df = pd.DataFrame(main_module.DEMO_DATA)
 try:
     df_clean, warn = dp.clean_and_prepare_data(demo_df)
-    check("D1", "Demo-Datensatz wird bereinigt (5 Zeilen -> Kategorie/Umsatz/Gewinn erkannt)",
-          len(df_clean) == 5 and "Kategorie_Clean" in df_clean.columns, "[ECHT]")
+    check("D1", "Berater-Demo wird bereinigt (96 Zeilen -> Umsatz/Kosten/Segment/Datum erkannt)",
+          len(df_clean) == 96
+          and "Kategorie_Clean" in df_clean.columns
+          and warn.get("kosten_source") == "Kosten"
+          and warn.get("datum_source") == "Datum", "[ECHT]")
 except Exception as e:
     check("D1", "Demo-Datensatz wird bereinigt", False, "[ECHT]", str(e))
 
 pii_scan = sec.scan_dataframe_for_pii(demo_df)
-check("P1", "PII-Scan findet die Notizen-Spalte mit Fake-PII im Demo-Datensatz",
-      "Notizen" in pii_scan["spalten_mit_treffern"] and pii_scan["treffer_gesamt"] >= 2, "[ECHT]",
+check("P1", "PII-Scan findet die synthetische E-Mail-Spalte im Demo-Datensatz",
+      "Kunden-E-Mail" in pii_scan["spalten_mit_treffern"] and pii_scan["treffer_gesamt"] >= 10, "[ECHT]",
       str(pii_scan))
 
 # CSV
@@ -764,6 +767,9 @@ except Exception as e:
 prompt_preview = ai._build_prompt(kpis_ai_test, 20.0, False, "Gastronomie / Café")
 check("U5", "AI-Prompt nutzt deutsches Zahlenformat fuer Umsatz/Marge", "1.500,00 EUR" in prompt_preview and "20,0 %" in prompt_preview, "[ECHT]")
 
+prompt_preview_en = ai._build_prompt(kpis_ai_test, 20.0, False, "Consulting", "en")
+check("U5b", "AI-Prompt nutzt englische Sprache und Zahlenformat", "Write in English" in prompt_preview_en and "EUR 1,500.00" in prompt_preview_en and "20.0 %" in prompt_preview_en, "[ECHT]")
+
 prompt_rev_only = ai._build_prompt(kpis_rev_only, 20.0, False, "SaaS / Micro-SaaS")
 check("U6", "AI-Prompt verbietet Profitabilitaetsaussagen ohne Kostenbasis",
       "Gewinn: nicht berechenbar" in prompt_rev_only
@@ -777,6 +783,13 @@ check("U7", "Lokaler AI-Fallback erfindet ohne Kostenbasis keinen Gewinn",
       and "nicht zulässig" in local_fallback["ziel_analyse"]
       and local_fallback["datengrundlage"],
       "[ECHT]", str(local_fallback))
+
+local_fallback_en = ai.generate_local_summary(kpis_rev_only, 20.0, "en")
+check("U7b", "Lokaler AI-Fallback kann englische Report-Texte erzeugen",
+      "cannot be calculated" in local_fallback_en["zusammenfassung"]
+      and "not permitted" in local_fallback_en["ziel_analyse"]
+      and "records" in local_fallback_en["datengrundlage"],
+      "[ECHT]", str(local_fallback_en))
 
 print()
 print("=" * 70)
@@ -794,6 +807,9 @@ check("V2", "Aenderung der Ziel-Marge aendert den Insight-Key", key1 != key3, "[
 key4 = main_module._compute_insight_key(kpis_ai_test, 20.0, "Gastronomie / Café", False)
 check("V3", "Identische Eingaben -> identischer Key (keine falschen Staleness-Alarme)", key1 == key4, "[ECHT]")
 
+key5 = main_module._compute_insight_key(kpis_ai_test, 20.0, "Gastronomie / Café", False, "en")
+check("V4", "Aenderung der Report-Sprache aendert den Insight-Key", key1 != key5, "[ECHT]")
+
 print()
 print("=" * 70)
 print("X-Y) PDF-ERSTELLUNG UND XSS-ESCAPING")
@@ -810,6 +826,15 @@ check("Y1b", "PDF zeigt ohne Kostenbasis keinen Proxy-Gewinn und keine 100-Proze
       "Nicht berechenbar" in rendered_rev_only
       and "Revenue-Proxie" not in rendered_rev_only
       and "100,00" not in rendered_rev_only,
+      "[ECHT]")
+rendered_en = rb._template.render(
+    date="x", kpis=kpis_xss, insights=None, niche=None, language="en",
+    labels=rb.labels_for("en"), report_settings=rb.normalize_report_settings({"language": "en"}),
+)
+check("Y1c", "PDF-Template kann englische Report-Beschriftung rendern",
+      "Core metrics" in rendered_en
+      and "Revenue" in rendered_en
+      and "Methodology and Data Quality" in rendered_en,
       "[ECHT]")
 report_builder_src = (PROJECT_ROOT / "core" / "report_builder.py").read_text(encoding="utf-8")
 check("Y2", "PDF-Export setzt macOS-Bibliothekspfad vor WeasyPrint-Import", "DYLD_FALLBACK_LIBRARY_PATH" in report_builder_src, "[ECHT]")
@@ -854,6 +879,14 @@ masked_preview = main_module._data_preview_table(pd.DataFrame({
 check("AC5", "Datenvorschau maskiert erkannte personenbezogene Muster",
       "max@test.de" not in masked_preview and "0176-1234567" not in masked_preview,
       "[ECHT]", masked_preview)
+check("AC6", "Gefuehrte Analyse-Hinweise sind im Flow sichtbar verankert",
+      "_assistant_card" in main_src
+      and "Demo mit Beispieldaten starten" in main_src
+      and "Nächster Schritt" in main_src
+      and "Was möchten Sie erstellen?" in main_src
+      and "Details & Prüfung" in main_src
+      and "Erweiterte Optionen" in main_src,
+      "[ECHT]")
 
 print()
 print("=" * 70)
