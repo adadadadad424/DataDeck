@@ -311,7 +311,13 @@ class SecurityHardeningTests(unittest.TestCase):
         serialized = str(result)
         self.assertNotIn("secret@example.com", serialized)
         self.assertNotIn("Max Mustermann", serialized)
+        self.assertEqual(len(result["segments"]), 1)
+        self.assertEqual(result["segments"][0]["category"], "Personenbezogene Segmente")
+        self.assertEqual(result["segments"][0]["revenue"], 1500.0)
+        self.assertEqual(result["segments"][0]["profit"], 300.0)
+        self.assertEqual(result["segments"][0]["row_count"], 2)
         self.assertTrue(result["category_labels_masked"])
+        self.assertTrue(result["category_labels_bucketed"])
 
     def test_22_ai_prompt_masks_sensitive_category_source_labels(self):
         kpis = {
