@@ -82,6 +82,17 @@ class ProductionTests(unittest.TestCase):
         self.assertNotIn("client-secret", render + docker)
         self.assertIn("python\", \"production_start.py", docker)
 
+    def test_billing_container_contains_import_dependencies(self):
+        docker = Path("Dockerfile.billing").read_text(encoding="utf-8")
+        self.assertIn("COPY --chown=datadeck:datadeck billing_service.py", docker)
+        self.assertIn("COPY --chown=datadeck:datadeck billing ./billing", docker)
+        self.assertIn("COPY --chown=datadeck:datadeck core ./core", docker)
+
+    def test_ci_builds_runtime_and_billing_images(self):
+        workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("docker build -t datadeck-app .", workflow)
+        self.assertIn("docker build -f Dockerfile.billing -t datadeck-billing .", workflow)
+
     def test_production_ui_uses_server_side_entitlement(self):
         source = Path("main.py").read_text(encoding="utf-8")
         self.assertIn("premium_feature_access(", source)
@@ -96,6 +107,15 @@ class ProductionTests(unittest.TestCase):
         self.assertIn("keine Rechtsberatung", source)
         self.assertIn('"werden nur berechnete und aggregierte Kennzahlen übertragen, niemals "', source)
         self.assertIn('"die vollständigen Rohdaten des Uploads."', source)
+
+    def test_public_trust_pdf_is_rate_limited(self):
+        source = Path("main.py").read_text(encoding="utf-8")
+        start = source.index('if st.button("Security Whitepaper erstellen"')
+        end = source.index('if st.session_state.get("trust_whitepaper")', start)
+        block = source[start:end]
+        self.assertIn('_operation_guard("public_pdf")', block)
+        controls = Path("core/security_controls.py").read_text(encoding="utf-8")
+        self.assertIn('"public_pdf": LimitPolicy', controls)
 
 
 if __name__ == "__main__":

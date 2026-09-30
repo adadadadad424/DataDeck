@@ -24,6 +24,8 @@ jobs:
       - run: python qa_secret_scan.py
       - run: python qa_all.py
       - run: python -m pip check
+      - run: docker build -t datadeck-app .
+      - run: docker build -f Dockerfile.billing -t datadeck-billing .
       - run: pip-audit -r requirements.txt
 
   postgres-integration:

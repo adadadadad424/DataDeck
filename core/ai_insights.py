@@ -69,6 +69,11 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL_NAME", "models/gemini-3.1-flash-lite")
 # ankommen (z.B. DNS-Fehler, Verbindungsabbruch vor Erreichen der API) -
 # werden wie 500/503 behandelt: retrybar mit Backoff.
 _NETWORK_ERROR_TYPES = (TimeoutError, ConnectionError, OSError)
+_SENSITIVE_CATEGORY_SOURCE_RE = re.compile(
+    r"(?:e-?mail|mail|kunde|kundin|customer|name|telefon|phone|kontakt|contact|"
+    r"ansprechpartner|inhaber)",
+    flags=re.IGNORECASE,
+)
 
 
 PlainInsight = Annotated[str, Field(min_length=1, max_length=2_000)]
@@ -217,20 +222,31 @@ def _format_currency(value: float, language: str = "de") -> str:
     return f"{_format_de_number(value, 2)} EUR"
 
 
-def _format_performer_list(entries: list, profit_available: bool, language: str = "de") -> str:
+def _category_label_for_prompt(value, category_source: object = None, language: str = "de") -> str:
+    if category_source and _SENSITIVE_CATEGORY_SOURCE_RE.search(str(category_source)):
+        return "masked segment" if normalize_report_language(language) == "en" else "maskiertes Segment"
+    return sanitize_for_prompt(value)
+
+
+def _format_performer_list(
+    entries: list,
+    profit_available: bool,
+    language: str = "de",
+    category_source: object = None,
+) -> str:
     lang = normalize_report_language(language)
     if profit_available:
         profit_label = "Profit" if lang == "en" else "Gewinn"
         margin_label = "Margin" if lang == "en" else "Marge"
         formatted = [
-            f"{sanitize_for_prompt(t['Kategorie_Clean'])} "
+            f"{_category_label_for_prompt(t['Kategorie_Clean'], category_source, lang)} "
             f"({profit_label}: {_format_currency(t['Gewinn_Clean'], lang)}, {margin_label}: {_format_marge(t['Marge'], lang)})"
             for t in entries
         ]
     else:
         revenue_label = "Revenue" if lang == "en" else "Umsatz"
         formatted = [
-            f"{sanitize_for_prompt(t['Kategorie_Clean'])} "
+            f"{_category_label_for_prompt(t['Kategorie_Clean'], category_source, lang)} "
             f"({revenue_label}: {_format_currency(t['Umsatz_Clean'], lang)})"
             for t in entries
         ]
@@ -267,8 +283,9 @@ def _build_prompt(
         {kpis.get('anzahl_zeilen', 'unbekannt')}.
         """
     profit_available = bool(kpis.get("profit_available", True))
-    top_str = _format_performer_list(kpis['top_performer'], profit_available, language)
-    flop_str = _format_performer_list(kpis['flop_performer'], profit_available, language)
+    category_source = (kpis.get("column_mapping") or {}).get("kategorie")
+    top_str = _format_performer_list(kpis['top_performer'], profit_available, language, category_source)
+    flop_str = _format_performer_list(kpis['flop_performer'], profit_available, language, category_source)
 
     marge_anzeige = (
         ("n/a (total revenue is 0)" if language == "en" else "n/v (Gesamtumsatz ist 0)")
@@ -482,8 +499,9 @@ def generate_local_summary(kpis: dict, ziel_marge: Optional[float], language: st
     profit_available = bool(kpis.get("profit_available", True))
     top = kpis.get("top_performer", [])
     flop = kpis.get("flop_performer", [])
-    top_name = sanitize_for_prompt(top[0]["Kategorie_Clean"]) if top else "nicht verfügbar"
-    flop_name = sanitize_for_prompt(flop[0]["Kategorie_Clean"]) if flop else "nicht verfügbar"
+    category_source = (kpis.get("column_mapping") or {}).get("kategorie")
+    top_name = _category_label_for_prompt(top[0]["Kategorie_Clean"], category_source, language) if top else "nicht verfügbar"
+    flop_name = _category_label_for_prompt(flop[0]["Kategorie_Clean"], category_source, language) if flop else "nicht verfügbar"
     rows = kpis.get("anzahl_zeilen", 0)
     categories = kpis.get("anzahl_kategorien", 0)
 

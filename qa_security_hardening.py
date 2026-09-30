@@ -296,7 +296,52 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertEqual(len(result["segments"]), 500)
         self.assertTrue(result["segments_truncated"])
 
-    def test_21_webhook_rejects_large_body_before_signature_work(self):
+    def test_21_persisted_segment_labels_mask_sensitive_category_sources(self):
+        categories = pd.DataFrame({
+            "Kategorie_Clean": ["secret@example.com", "Max Mustermann"],
+            "Umsatz_Clean": [1000, 500],
+            "Gewinn_Clean": [200, 100],
+            "Marge": [20.0, 20.0],
+            "Datensaetze": [1, 1],
+        })
+        result = aggregate_result({
+            "kategorien_daten": categories,
+            "column_mapping": {"kategorie": "customer_email"},
+        })
+        serialized = str(result)
+        self.assertNotIn("secret@example.com", serialized)
+        self.assertNotIn("Max Mustermann", serialized)
+        self.assertTrue(result["category_labels_masked"])
+
+    def test_22_ai_prompt_masks_sensitive_category_source_labels(self):
+        kpis = {
+            "gesamt_umsatz": 1500.0,
+            "gesamt_gewinn": 300.0,
+            "aktuelle_marge": 20.0,
+            "anzahl_zeilen": 2,
+            "profit_available": True,
+            "financial_aggregation_available": True,
+            "top_performer": [{
+                "Kategorie_Clean": "secret@example.com",
+                "Umsatz_Clean": 1000.0,
+                "Gewinn_Clean": 200.0,
+                "Marge": 20.0,
+            }],
+            "flop_performer": [{
+                "Kategorie_Clean": "Max Mustermann",
+                "Umsatz_Clean": 500.0,
+                "Gewinn_Clean": 100.0,
+                "Marge": 20.0,
+            }],
+            "column_mapping": {"kategorie": "customer_name"},
+            "time_analysis": {},
+        }
+        prompt = _build_prompt(kpis, 20.0, True, "Allgemein", "de")
+        self.assertNotIn("secret@example.com", prompt)
+        self.assertNotIn("Max Mustermann", prompt)
+        self.assertIn("maskiertes Segment", prompt)
+
+    def test_23_webhook_rejects_large_body_before_signature_work(self):
         reset_security_controls_for_tests()
         with patch.dict(os.environ, {**_billing_env(), "MAX_WEBHOOK_BODY_BYTES": "16384"}, clear=False):
             with TestClient(app) as client:

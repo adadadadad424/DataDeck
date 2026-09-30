@@ -319,6 +319,7 @@ def calculate_kpis(df: pd.DataFrame, analysis_context: dict | None = None) -> di
             "umsatz": context.get("umsatz_source"),
             "gewinn": context.get("gewinn_source"),
             "kosten": context.get("kosten_source"),
+            "kategorie": context.get("kategorie_source"),
             "datum": context.get("datum_source"),
         },
         "data_quality": data_quality,

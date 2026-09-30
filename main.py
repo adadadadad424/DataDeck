@@ -391,7 +391,11 @@ def _render_public_beta_page() -> bool:
         st.dataframe(pd.DataFrame(SUBPROCESSORS, columns=["Dienst", "Zweck", "Hinweis"]), hide_index=True)
         st.warning("Keine ISO-, SOC-2- oder DSGVO-Zertifizierung. Automatische Mustererkennung ersetzt keine Rechtsprüfung.")
         if st.button("Security Whitepaper erstellen", key="trust_whitepaper_btn"):
-            st.session_state.trust_whitepaper = generate_security_whitepaper()
+            try:
+                with _operation_guard("public_pdf"):
+                    st.session_state.trust_whitepaper = generate_security_whitepaper()
+            except SecurityLimitError as error:
+                _show_security_limit("public_pdf", error)
         if st.session_state.get("trust_whitepaper"):
             st.download_button("Security Whitepaper herunterladen", st.session_state.trust_whitepaper,
                                "DataDeck_Security_Whitepaper.pdf", "application/pdf")

@@ -4,8 +4,18 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import re
 
 import pandas as pd
+
+from core.security import detect_pii_types, mask_pii
+
+
+_SENSITIVE_CATEGORY_SOURCE_RE = re.compile(
+    r"(?:e-?mail|mail|kunde|kundin|customer|name|telefon|phone|kontakt|contact|"
+    r"ansprechpartner|inhaber)",
+    flags=re.IGNORECASE,
+)
 
 
 def _json_value(value):
@@ -24,17 +34,39 @@ def _json_value(value):
         return str(value)[:200]
 
 
+def _category_source_is_sensitive(source: object) -> bool:
+    return bool(source and _SENSITIVE_CATEGORY_SOURCE_RE.search(str(source)))
+
+
+def _safe_category_value(value, category_source: object = None):
+    if value is None:
+        return None
+    text = str(value).strip()[:200]
+    if not text:
+        return "Unbekannt"
+    if _category_source_is_sensitive(category_source):
+        return "[Segment aus personenbezogener Spalte maskiert]"
+    masked = mask_pii(text)
+    if masked != text or detect_pii_types(text):
+        return masked[:200]
+    return text[:200]
+
+
 def aggregate_result(kpis: dict) -> dict:
     """Return only aggregate facts. Raw rows and source columns cannot cross this API."""
     segments = []
     category_frame = kpis.get("kategorien_daten")
+    category_source = (kpis.get("column_mapping") or {}).get("kategorie")
+    masked_category_labels = False
     if isinstance(category_frame, pd.DataFrame):
         ranked_categories = category_frame.sort_values(
             "Umsatz_Clean", ascending=False, na_position="last"
         ).head(500)
         for row in ranked_categories.to_dict("records"):
+            category = _safe_category_value(row.get("Kategorie_Clean"), category_source)
+            masked_category_labels = masked_category_labels or category != _json_value(row.get("Kategorie_Clean"))
             segments.append({
-                "category": _json_value(row.get("Kategorie_Clean")),
+                "category": category,
                 "revenue": _json_value(row.get("Umsatz_Clean")),
                 "profit": _json_value(row.get("Gewinn_Clean")),
                 "margin": _json_value(row.get("Marge")),
@@ -64,5 +96,6 @@ def aggregate_result(kpis: dict) -> dict:
         "segments_truncated": bool(
             isinstance(category_frame, pd.DataFrame) and len(category_frame) > len(segments)
         ),
+        "category_labels_masked": masked_category_labels,
         "time_series": time_series,
     }

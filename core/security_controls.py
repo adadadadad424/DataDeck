@@ -33,6 +33,7 @@ _DEFAULT_POLICIES = {
     "analysis": LimitPolicy(60, 600, 1, 4, 600),
     "ai": LimitPolicy(6, 3600, 1, 2, 60),
     "pdf": LimitPolicy(12, 3600, 1, 2, 120),
+    "public_pdf": LimitPolicy(6, 3600, 1, 1, 60),
     "feedback": LimitPolicy(5, 3600, 1, 20, 100),
     "checkout": LimitPolicy(6, 3600, 1, 10, 60),
     "portal": LimitPolicy(12, 3600, 1, 10, 120),
