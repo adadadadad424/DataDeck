@@ -2224,31 +2224,82 @@ def main() -> None:
             with st.form("report_settings_form"):
                 rs1, rs2 = st.columns(2)
                 with rs1:
-                    company_name = st.text_input("Beratungsunternehmen", value=settings.get("company_name", ""), max_chars=160)
+                    company_name = st.text_input(
+                        "Beratungsunternehmen",
+                        value=settings.get("company_name", ""),
+                        max_chars=160,
+                        key="report_company_name_input",
+                    )
                     client_name = st.text_input(
                         "Erstellt für / Kunde",
                         value=settings.get("client_name", "") or (selected_client.name if selected_client is not None else ""),
                         max_chars=160,
+                        key="report_client_name_input",
                         help="Erscheint auf dem PDF- und PowerPoint-Cover.",
                     )
-                    accent_color = st.text_input("Akzentfarbe (Hex)", value=settings.get("accent_color", "#4F46E5"), max_chars=7)
-                    contact_name = st.text_input("Ansprechpartner", value=settings.get("contact_name", ""), max_chars=120)
+                    accent_color = st.text_input(
+                        "Akzentfarbe (Hex)",
+                        value=settings.get("accent_color", "#4F46E5"),
+                        max_chars=7,
+                        key="report_accent_color_input",
+                    )
+                    contact_name = st.text_input(
+                        "Ansprechpartner",
+                        value=settings.get("contact_name", ""),
+                        max_chars=120,
+                        key="report_contact_name_input",
+                    )
                 with rs2:
                     report_language = st.selectbox(
                         "Report-Sprache",
                         options=["de", "en"],
                         index=0 if normalize_report_language(settings.get("language")) == "de" else 1,
                         format_func=report_language_name,
+                        key="report_language_select",
                         help="Steuert PDF, PowerPoint und KI-Texte im Report. Die App selbst bleibt deutsch.",
                     )
-                    contact_email = st.text_input("Kontakt-E-Mail", value=settings.get("contact_email", ""), max_chars=200)
-                    footer_text = st.text_input("Fußzeile", value=settings.get("footer_text", ""), max_chars=300)
-                show_summary = st.checkbox("Executive Summary", value=settings.get("show_summary", True))
-                show_ai_insights = st.checkbox("KI-Insights", value=settings.get("show_ai_insights", True))
-                show_kpis = st.checkbox("Kennzahlen", value=settings.get("show_kpis", True))
-                show_segments = st.checkbox("Segmente", value=settings.get("show_segments", True))
-                show_time_series = st.checkbox("Zeitentwicklung", value=settings.get("show_time_series", True))
-                show_methodology = st.checkbox("Methodik", value=settings.get("show_methodology", True))
+                    contact_email = st.text_input(
+                        "Kontakt-E-Mail",
+                        value=settings.get("contact_email", ""),
+                        max_chars=200,
+                        key="report_contact_email_input",
+                    )
+                    footer_text = st.text_input(
+                        "Fußzeile",
+                        value=settings.get("footer_text", ""),
+                        max_chars=300,
+                        key="report_footer_text_input",
+                    )
+                show_summary = st.checkbox(
+                    "Executive Summary",
+                    value=settings.get("show_summary", True),
+                    key="report_show_summary_checkbox",
+                )
+                show_ai_insights = st.checkbox(
+                    "KI-Insights",
+                    value=settings.get("show_ai_insights", True),
+                    key="report_show_ai_insights_checkbox",
+                )
+                show_kpis = st.checkbox(
+                    "Kennzahlen",
+                    value=settings.get("show_kpis", True),
+                    key="report_show_kpis_checkbox",
+                )
+                show_segments = st.checkbox(
+                    "Segmente",
+                    value=settings.get("show_segments", True),
+                    key="report_show_segments_checkbox",
+                )
+                show_time_series = st.checkbox(
+                    "Zeitentwicklung",
+                    value=settings.get("show_time_series", True),
+                    key="report_show_time_series_checkbox",
+                )
+                show_methodology = st.checkbox(
+                    "Methodik",
+                    value=settings.get("show_methodology", True),
+                    key="report_show_methodology_checkbox",
+                )
                 st.markdown("**PowerPoint-Konfiguration**")
                 ppt1, ppt2 = st.columns(2)
                 with ppt1:
@@ -2260,6 +2311,7 @@ def main() -> None:
                             "full": "Vollständiges Analyse-Deck",
                             "short": "Kurzdeck für Kundentermin",
                         }.get(value, value),
+                        key="report_ppt_deck_style_select",
                         help="Kurzdeck konzentriert sich auf Cover, Summary, Kennzahlen, Segmente, Empfehlungen und Methodik.",
                     )
                 with ppt2:
@@ -2272,14 +2324,16 @@ def main() -> None:
                             "finance": "Finanzen",
                             "growth": "Vertrieb / Wachstum",
                         }.get(value, value),
+                        key="report_ppt_audience_select",
                         help="Steuert Fokus und Prioritäten im PowerPoint-Deck.",
                     )
                 ppt_speaker_notes = st.checkbox(
                     "Sprechernotizen hinzufügen",
                     value=bool(settings.get("ppt_speaker_notes", False)),
+                    key="report_ppt_speaker_notes_checkbox",
                     help="Fügt kurze Presenter-Notizen in die PowerPoint ein.",
                 )
-                if st.form_submit_button("Report-Einstellungen speichern", width="stretch"):
+                if st.form_submit_button("Report-Einstellungen speichern", key="report_settings_submit", width="stretch"):
                     st.session_state.report_settings = {
                         "company_name": company_name, "client_name": client_name, "accent_color": accent_color,
                         "contact_name": contact_name, "contact_email": contact_email,

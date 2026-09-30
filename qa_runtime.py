@@ -41,12 +41,12 @@ def create_export(app, choice):
 
 def save_english_report_settings(app):
     """Exercise the report configuration UI used by the consultant demo flow."""
-    app.text_input[0].set_value("AdEx Partners")
-    app.text_input[1].set_value("Skeon Digital")
-    app.selectbox[5].set_value("en")
-    app.selectbox[6].set_value("short")
-    app.selectbox[7].set_value("management")
-    app.button(key="FormSubmitter:report_settings_form-Report-Einstellungen speichern").click().run()
+    app.text_input(key="report_company_name_input").set_value("AdEx Partners")
+    app.text_input(key="report_client_name_input").set_value("Skeon Digital")
+    app.selectbox(key="report_language_select").set_value("en")
+    app.selectbox(key="report_ppt_deck_style_select").set_value("short")
+    app.selectbox(key="report_ppt_audience_select").set_value("management")
+    app.button(key="report_settings_submit").click().run()
     assert_ok(app)
     assert app.session_state["report_settings"]["language"] == "en"
     assert app.session_state["report_settings"]["client_name"] == "Skeon Digital"

@@ -38,6 +38,23 @@ class UIQualityTests(unittest.TestCase):
         self.assertNotIn('key="generate_pptx_btn"', source)
         self.assertIn("können in Keynote geöffnet oder importiert werden", source)
 
+    def test_report_config_widgets_have_stable_keys(self):
+        source = Path("main.py").read_text(encoding="utf-8")
+        for key in (
+            "report_company_name_input",
+            "report_client_name_input",
+            "report_language_select",
+            "report_ppt_deck_style_select",
+            "report_ppt_audience_select",
+            "report_settings_submit",
+        ):
+            self.assertIn(f'key="{key}"', source)
+        runtime = Path("qa_runtime.py").read_text(encoding="utf-8")
+        self.assertIn('app.text_input(key="report_company_name_input")', runtime)
+        self.assertIn('app.selectbox(key="report_language_select")', runtime)
+        self.assertNotIn("app.text_input[0]", runtime)
+        self.assertNotIn("app.selectbox[5]", runtime)
+
     def test_modern_controls_share_theme_tokens(self):
         for name in ("light", "dark"):
             with self.subTest(theme=name):
