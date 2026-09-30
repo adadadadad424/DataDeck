@@ -39,6 +39,21 @@ def create_export(app, choice):
     return app
 
 
+def save_english_report_settings(app):
+    """Exercise the report configuration UI used by the consultant demo flow."""
+    app.text_input[0].set_value("AdEx Partners")
+    app.text_input[1].set_value("Skeon Digital")
+    app.selectbox[5].set_value("en")
+    app.selectbox[6].set_value("short")
+    app.selectbox[7].set_value("management")
+    app.button(key="FormSubmitter:report_settings_form-Report-Einstellungen speichern").click().run()
+    assert_ok(app)
+    assert app.session_state["report_settings"]["language"] == "en"
+    assert app.session_state["report_settings"]["client_name"] == "Skeon Digital"
+    assert app.session_state["report_settings"]["ppt_deck_style"] == "short"
+    return app
+
+
 def main():
     env_file = Path(".env")
     env_backup = Path("work/.env.qa_runtime_backup")
@@ -69,10 +84,12 @@ def main():
 
         app.toggle(key="premium_toggle").set_value(True).run()
         assert_ok(app)
-        create_export(app, "PDF-Report")
+        save_english_report_settings(app)
+        create_export(app, "Beide erstellen")
         assert app.session_state["pdf_bytes"].startswith(b"%PDF-")
-        create_export(app, "PowerPoint-Präsentation")
         assert app.session_state["pptx_bytes"].startswith(b"PK")
+        assert app.session_state["pdf_filename"].endswith(".pdf")
+        assert app.session_state["pptx_filename"].endswith(".pptx")
 
         csv = b"Kategorie,Umsatz,Gewinn\nPlus,1000,300\nMinus,500,-400\n"
         upload_and_start(app, ("sample.csv", csv, "text/csv"))
@@ -134,7 +151,10 @@ def main():
         assert app.session_state["prepared_df_cache"] is None
         assert app.session_state["pii_scan_cache"] is None
         assert app.session_state["kpi_cache"] is None
-        print("Runtime QA: Demo, CSV, Revenue-only, XLSX, Filter, Theme, no-key AI, stale AI, real PDF and PPTX PASS")
+        print(
+            "Runtime QA: Demo, report config, combined PDF/PPTX export, CSV, Revenue-only, "
+            "XLSX, Filter, Theme, no-key AI, stale AI and cleanup PASS"
+        )
     finally:
         if env_backup.exists():
             env_backup.replace(env_file)
